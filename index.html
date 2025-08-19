@@ -3,56 +3,34 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>QR-Scanner (Front, jsQR + ZXing Fallback)</title>
+<title>QR-Scanner (Front, jsQR + ZXing Snapshot)</title>
 <style>
   :root { --accent:#0078d7; }
-  html,body{
-    margin:0;padding:0;height:100%;
-    background:#000;color:#fff;font-family:system-ui,"Segoe UI",Roboto,Arial,sans-serif;
-    overflow:hidden;
-  }
+  html,body{margin:0;padding:0;height:100%;background:#000;color:#fff;font-family:system-ui,"Segoe UI",Roboto,Arial,sans-serif;overflow:hidden}
   #wrap{position:relative;width:100vw;height:100vh;background:#000}
   video{
     position:fixed; inset:0;
     width:100%; height:100%;
     object-fit:cover;
     background:#111;
-    /* Workarounds gegen schwarzes Rendering */
     transform:none !important; -webkit-transform:none !important;
     will-change:transform; backface-visibility:hidden; -webkit-backface-visibility:hidden;
   }
-  /* klares Scanfenster + Linie (leicht, ohne Masken) */
-  .window{
-    position:absolute; top:30%; left:20%; width:60%; height:40%;
-    border:3px solid var(--accent); border-radius:8px;
-    z-index:2; pointer-events:none;
-  }
-  .scanline{
-    position:absolute; left:20%; width:60%; height:2px;
-    background:rgba(0,120,215,.95); border-radius:1px;
-    animation:scanAnim 2s linear infinite; z-index:3; pointer-events:none;
-  }
-  @keyframes scanAnim { 0%{top:30%} 50%{top:70%} 100%{top:30%} }
-
-  /* Controls OBEN fixiert */
+  /* schlankes Overlay */
+  .window{position:absolute;top:30%;left:20%;width:60%;height:40%;border:3px solid var(--accent);border-radius:8px;z-index:2;pointer-events:none}
+  .scanline{position:absolute;left:20%;width:60%;height:2px;background:rgba(0,120,215,.95);border-radius:1px;animation:scanAnim 2s linear infinite;z-index:3;pointer-events:none}
+  @keyframes scanAnim{0%{top:30%}50%{top:70%}100%{top:30%}}
   .controls{
     position:fixed; top:calc(env(safe-area-inset-top, 0px) + 10px);
     left:50%; transform:translateX(-50%);
     display:flex; gap:10px; z-index:10000;
     align-items:center; flex-wrap:wrap; justify-content:center; max-width:92vw;
   }
-  button{
-    appearance:none;border:none;border-radius:8px;
-    padding:10px 14px;font-size:15px;cursor:pointer;
-    background:var(--accent);color:#fff;
-  }
-  button.secondary{ background:rgba(255,255,255,.12); border:1px solid rgba(255,255,255,.25) }
-  #status{
-    position:fixed; left:12px; right:12px; top:calc(env(safe-area-inset-top, 0px) + 56px);
-    z-index:10000; font-size:13px; line-height:1.25; color:#eee;
-    text-shadow:0 1px 2px rgba(0,0,0,.8);
-    max-height:25vh; overflow:auto; padding:6px 8px; background:rgba(0,0,0,.35); border-radius:6px;
-  }
+  button{appearance:none;border:none;border-radius:8px;padding:10px 14px;font-size:15px;cursor:pointer;background:var(--accent);color:#fff}
+  button.secondary{background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.25)}
+  #status{position:fixed;left:12px;right:12px;top:calc(env(safe-area-inset-top, 0px) + 56px);
+    z-index:10000;font-size:13px;line-height:1.25;color:#eee;text-shadow:0 1px 2px rgba(0,0,0,.8);
+    max-height:25vh;overflow:auto;padding:6px 8px;background:rgba(0,0,0,.35);border-radius:6px}
 </style>
 </head>
 <body>
@@ -80,40 +58,43 @@
     const btnSwap = document.getElementById('switch');
     const btnRes  = document.getElementById('rescan');
 
-    // === Einstellungen ===
-    const FRONT_DEFAULT       = true;         // Frontkamera standard
-    const ZXING_DELAY_MS      = 8000;         // so lange nur jsQR, dann ZXing-Fallback
-    const ZXING_PERIOD_MS     = 700;          // ZXing höchstens 1x pro ~0.7s versuchen
-    const ROI_W               = 0.60;         // ROI Breite relativ
-    const ROI_H               = 0.40;         // ROI Höhe relativ
+    // ===== Einstellungen =====
+    const FRONT_DEFAULT       = true;  // Front ist Standard
+    const ZXING_ENABLE_AFTER  = 8000;  // ZXing erst nach 8s zuschalten
+    const ZXING_PERIOD_MS     = 600;   // ZXing-Snapshot höchstens alle 600ms
+    const ROI_W               = 0.60;  // Sicht-Fenster (nur visuell)
+    const ROI_H               = 0.40;
 
-    // Canvas fürs ROI
-    const canvas = document.createElement('canvas');
-    const ctx    = canvas.getContext('2d', { willReadFrequently: true });
+    let useFront  = FRONT_DEFAULT;
+    let stream    = null;
+    let scanning  = false;
+    let enableZX  = false;
+    let lastZX    = 0;
 
-    // ZXing-Reader mit erweiterten Formaten (falls verfügbar)
-    const hints = new Map();
-    const formats = [ ZXing.BarcodeFormat.QR_CODE ];
+    // Canvas für ROI + Vollbild
+    const roiCanvas  = document.createElement('canvas');
+    const roiCtx     = roiCanvas.getContext('2d', { willReadFrequently: true });
+    const fullCanvas = document.createElement('canvas');
+    const fullCtx    = fullCanvas.getContext('2d', { willReadFrequently: true });
+    roiCtx.imageSmoothingEnabled  = false;
+    fullCtx.imageSmoothingEnabled = false;
+
+    // ZXing: breite Format-Auswahl (falls im Build vorhanden)
+    const hints   = new Map();
+    const formats = [
+      ZXing.BarcodeFormat.QR_CODE,
+      ZXing.BarcodeFormat.DATA_MATRIX,
+      ZXing.BarcodeFormat.AZTEC,
+      ZXing.BarcodeFormat.PDF_417,
+      ZXing.BarcodeFormat.CODE_128
+    ];
     if (ZXing.BarcodeFormat.MICRO_QR_CODE) formats.push(ZXing.BarcodeFormat.MICRO_QR_CODE);
     if (ZXing.BarcodeFormat.RM_QR_CODE)    formats.push(ZXing.BarcodeFormat.RM_QR_CODE);
     hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, formats);
     hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
-    const zxingReader = new ZXing.BrowserMultiFormatReader(hints);
-
-    let stream = null;
-    let scanning = false;
-    let useFront = FRONT_DEFAULT;
-    let lastZX = 0;
-    let zxingEnabled = false;
+    const zxing = new ZXing.BrowserMultiFormatReader(hints);
 
     const log = (m)=>{ console.log(m); statusEl.textContent = (typeof m==='string') ? m : JSON.stringify(m); };
-
-    function stopStream(){
-      if (stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
-      vid.srcObject = null;
-      scanning = false;
-      zxingEnabled = false;
-    }
 
     async function ensurePermission(){
       try{
@@ -122,10 +103,13 @@
         tmp.getTracks().forEach(t=>t.stop());
         log('Berechtigung OK.');
         return true;
-      }catch(e){
-        log(`getUserMedia-Fehler: ${e.name} – ${e.message}`);
-        return false;
-      }
+      }catch(e){ log(`getUserMedia-Fehler: ${e.name} – ${e.message}`); return false; }
+    }
+
+    function stopStream(){
+      if (stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
+      vid.srcObject = null;
+      scanning = false; enableZX = false;
     }
 
     function roiRect(){
@@ -135,14 +119,14 @@
       const sh = Math.floor(vh * ROI_H);
       const sx = Math.floor((vw - sw) / 2);
       const sy = Math.floor((vh - sh) / 2);
-      return { sx, sy, sw, sh };
+      return { sx, sy, sw, sh, vw, vh };
     }
 
     // Wert aus Rohtext -> 'extracted'
     function extractValue(txt){
-      let m = txt.match(/\$(FA[^$]+)\$/); if (m && m[1]) return m[1]; // $FA…$
-      m = txt.match(/^(FA[^$]+)/);        if (m && m[1]) return m[1]; // FA…$…
-      return txt; // sonst komplett
+      let m = txt.match(/\$(FA[^$]+)\$/); if (m && m[1]) return m[1];
+      m = txt.match(/^(FA[^$]+)/);        if (m && m[1]) return m[1];
+      return txt;
     }
 
     function navigateToBC(extracted){
@@ -162,46 +146,50 @@
       navigateToBC(extracted);
     }
 
-    // Haupt-Scanloop: erst jsQR, später periodisch ZXing über Canvas-DataURL
+    // Haupt-Scanloop:
+    //  - jsQR auf ROI JEDEN Frame
+    //  - jsQR auf VOLLBILD alle ~3 Frames
+    //  - ZXing (VOLLBILD-Snapshot) erst nach 8s, dann gedrosselt
+    let frameCount = 0;
     async function scanLoop(){
       if (!scanning) return;
+      const { sx, sy, sw, sh, vw, vh } = roiRect();
 
-      const vw = vid.videoWidth, vh = vid.videoHeight;
-      if (vw && vh){
-        const { sx, sy, sw, sh } = roiRect();
-        // 1) ROI in Canvas zeichnen
-        canvas.width = sw; canvas.height = sh;
+      // ROI → Canvas (ohne Resampling)
+      roiCanvas.width = sw; roiCanvas.height = sh;
+      try { roiCtx.drawImage(vid, sx, sy, sw, sh, 0, 0, sw, sh); } catch(_) {}
+
+      // jsQR – ROI (schnell)
+      try{
+        const img = roiCtx.getImageData(0, 0, sw, sh);
+        const qr  = jsQR(img.data, sw, sh, { inversionAttempts: "attemptBoth" });
+        if (qr && qr.data) { onDecode(extractValue(qr.data)); return; }
+      }catch(_){}
+
+      // jsQR – VOLLBILD alle 3 Frames (hilft bei großen/komplexen Codes)
+      frameCount = (frameCount + 1) % 3;
+      if (frameCount === 0) {
+        fullCanvas.width = vw; fullCanvas.height = vh;
         try {
-          ctx.drawImage(vid, sx, sy, sw, sh, 0, 0, sw, sh);
-        } catch(_) { /* Frame noch nicht bereit */ }
+          fullCtx.drawImage(vid, 0, 0, vw, vh);
+          const imgF = fullCtx.getImageData(0, 0, vw, vh);
+          const qrF  = jsQR(imgF.data, vw, vh, { inversionAttempts: "attemptBoth" });
+          if (qrF && qrF.data) { onDecode(extractValue(qrF.data)); return; }
+        } catch(_){}
+      }
 
-        // 2) jsQR (schnell) – auf jedem Frame
+      // ZXing – VOLLBILD-Snapshot (kein zweiter Kamerazugriff!)
+      const now = Date.now();
+      if (enableZX && now > lastZX + ZXING_PERIOD_MS) {
+        lastZX = now;
         try {
-          const img = ctx.getImageData(0, 0, sw, sh);
-          const code = jsQR(img.data, sw, sh, { inversionAttempts: "attemptBoth" });
-          if (code && code.data) {
-            const extracted = extractValue(code.data);
-            onDecode(extracted);
-            return;
-          }
-        } catch(_) {}
-
-        // 3) ZXing (teurer) – erst nach festem Delay, dann ratebegrenzt
-        const now = Date.now();
-        if (now > lastZX + ZXING_PERIOD_MS && zxingEnabled) {
-          lastZX = now;
-          try {
-            const dataUrl = canvas.toDataURL('image/png'); // Snapshot
-            // decodeFromImageUrl öffnet KEINEN neuen Kamerastream
-            const result = await zxingReader.decodeFromImageUrl(dataUrl);
-            if (result && result.getText) {
-              const extracted = extractValue(result.getText());
-              onDecode(extracted);
-              return;
-            }
-          } catch(err) {
-            // NotFoundException => kein Code im Bild; leise ignorieren
-          }
+          if (fullCanvas.width !== vw) { fullCanvas.width = vw; fullCanvas.height = vh; fullCtx.imageSmoothingEnabled=false; }
+          fullCtx.drawImage(vid, 0, 0, vw, vh);
+          const url = fullCanvas.toDataURL('image/png');
+          const res = await zxing.decodeFromImageUrl(url);
+          if (res && res.getText) { onDecode(extractValue(res.getText())); return; }
+        } catch(err) {
+          // NotFoundException = kein Code im Bild → leise ignorieren
         }
       }
 
@@ -211,20 +199,28 @@
     async function startCamera(){
       stopStream();
       try{
-        const constraints = { video: { facingMode: { ideal: useFront ? 'user' : 'environment' } }, audio:false };
-        stream = await navigator.mediaDevices.getUserMedia(constraints);
+        // Erst „ideal“ hohe Auflösung probieren, sonst minimal fallback
+        const cIdeal = { video: { facingMode: { ideal: useFront ? 'user' : 'environment' }, width:{ideal:1280}, height:{ideal:720} }, audio:false };
+        const cMin   = { video: { facingMode: { ideal: useFront ? 'user' : 'environment' } }, audio:false };
+        try {
+          stream = await navigator.mediaDevices.getUserMedia(cIdeal);
+        } catch {
+          stream = await navigator.mediaDevices.getUserMedia(cMin);
+        }
         vid.srcObject = stream;
 
-        // Auf Metadaten warten, dann play() (verhindert schwarzes Bild)
+        // Auf Metadaten warten → dann play() (verhindert Schwarzbild)
         await new Promise(res => { if (vid.readyState >= 2) res(); else vid.onloadedmetadata = res; });
         await vid.play().catch(()=>{});
 
-        // Startstatus
-        log(`Kamera aktiv – ${useFront ? 'Front' : 'Back'}`);
         btnRes.style.display = 'none';
         scanning = true;
-        zxingEnabled = false;
-        setTimeout(() => { zxingEnabled = true; }, ZXING_DELAY_MS); // erst später ZXing zuschalten
+        enableZX = false;
+        log(`Kamera aktiv – ${useFront ? 'Front' : 'Back'} (${vid.videoWidth}×${vid.videoHeight})`);
+
+        // ZXing später zuschalten
+        setTimeout(()=> { enableZX = true; }, ZXING_ENABLE_AFTER);
+
         requestAnimationFrame(scanLoop);
       }catch(e){
         log(`Start-Fehler: ${e.name} – ${e.message}`);
@@ -249,7 +245,7 @@
       await startCamera();
     });
 
-    // Sichtbar halten, wenn man zurückkehrt
+    // Sicherstellen, dass das Video nach Rückkehr weiterläuft
     document.addEventListener('visibilitychange', ()=>{
       if (document.visibilityState === 'visible' && vid.srcObject && vid.paused){
         vid.play().catch(()=>{});
