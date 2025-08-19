@@ -3,20 +3,34 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>QR-Code Scanner (stabil: ZXing + Fallback)</title>
+<title>QR-Code Scanner (Frontcam + längerer Fallback)</title>
 <style>
   :root { --accent:#0078d7; }
-  html,body{margin:0;padding:0;height:100%;background:#000;color:#fff;font-family:system-ui,"Segoe UI",Roboto,Arial,sans-serif}
+  html,body{margin:0;padding:0;height:100%;background:#000;color:#fff;font-family:system-ui,"Segoe UI",Roboto,Arial,sans-serif;overflow:hidden}
   #scanner-container{position:relative;width:100vw;height:100vh;overflow:hidden;background:#000}
   #preview{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:#000;z-index:0}
+
   .darken{position:absolute;inset:0;background:rgba(0,0,0,.35);z-index:1;pointer-events:none}
-  .clear-window{position:absolute;top:30%;left:20%;width:60%;height:40%;border:3px solid var(--accent);border-radius:8px;background:transparent;z-index:2;pointer-events:none;box-shadow:0 0 0 9999px rgba(0,0,0,.22)}
-  .scanline{position:absolute;left:20%;width:60%;height:2px;background:rgba(0,120,215,.95);border-radius:1px;animation:scanAnim 2s linear infinite;z-index:3;pointer-events:none}
+  .clear-window{position:absolute;top:30%;left:20%;width:60%;height:40%;
+    border:3px solid var(--accent);border-radius:8px;background:transparent;z-index:2;pointer-events:none;
+    box-shadow:0 0 0 9999px rgba(0,0,0,.22)}
+  .scanline{position:absolute;left:20%;width:60%;height:2px;background:rgba(0,120,215,.95);
+    border-radius:1px;animation:scanAnim 2s linear infinite;z-index:3;pointer-events:none}
   @keyframes scanAnim{0%{top:30%}50%{top:70%}100%{top:30%}}
-  .controls{position:absolute;left:50%;bottom:18px;transform:translateX(-50%);display:flex;gap:10px;z-index:9999;align-items:center;flex-wrap:wrap;justify-content:center;max-width:92vw}
-  button{appearance:none;border:none;border-radius:8px;padding:12px 16px;font-size:16px;cursor:pointer;background:var(--accent);color:#fff}
+
+  /* Controls jetzt OBEN fixiert (nicht hinter Browser-UI) */
+  .controls{
+    position:fixed; /* fix statt absolute */
+    top:calc(env(safe-area-inset-top, 0px) + 10px);
+    left:50%;
+    transform:translateX(-50%);
+    display:flex;gap:10px;z-index:10000;align-items:center;flex-wrap:wrap;justify-content:center;max-width:92vw
+  }
+  button{appearance:none;border:none;border-radius:8px;padding:10px 14px;font-size:15px;cursor:pointer;background:var(--accent);color:#fff}
   button.secondary{background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.25)}
-  #status{position:absolute;left:12px;right:12px;bottom:80px;z-index:9999;font-size:14px;line-height:1.25;color:#eee;text-shadow:0 1px 2px rgba(0,0,0,.8);max-height:25vh;overflow:auto;padding:6px 8px;background:rgba(0,0,0,.35);border-radius:6px}
+  #status{position:fixed;left:12px;right:12px;top:calc(env(safe-area-inset-top, 0px) + 56px);
+    z-index:10000;font-size:13px;line-height:1.25;color:#eee;text-shadow:0 1px 2px rgba(0,0,0,.8);
+    max-height:25vh;overflow:auto;padding:6px 8px;background:rgba(0,0,0,.35);border-radius:6px}
 </style>
 </head>
 <body>
@@ -45,11 +59,14 @@
     const switchBtn = document.getElementById('switchCamera');
     const rescanBtn = document.getElementById('rescan');
 
+    const FALLBACK_DELAY_MS = 8000; // <- länger warten, bevor jsQR-Fallback startet
+
     // Fallback-Canvas für jsQR
     const canvas = document.createElement('canvas');
     const ctx    = canvas.getContext('2d');
 
-    let facing = 'environment';     // bevorzugt Rückkamera
+    // Standard jetzt FRONT-KAMERA
+    let facing = 'user';            // 'user' = Front | 'environment' = Rück
     let scanning = false;
     let fallbackActive = false;
     let lastHit = 0;
@@ -63,7 +80,6 @@
     }
 
     function getScanRect(){
-      // ROI wie das blaue Fenster (60% Breite, 40% Höhe)
       const vw = videoEl.videoWidth  || 1280;
       const vh = videoEl.videoHeight || 720;
       const sw = Math.floor(vw * 0.60);
@@ -87,20 +103,20 @@
     }
 
     async function startZXing(){
-      // super-simpler Start mit facingMode; keine deviceId-Spielereien
       const constraints = {
         video: { facingMode: { ideal: facing }, width:{ideal:1920}, height:{ideal:1080}, advanced:[{focusMode:"continuous"}] },
         audio:false
       };
       try{
         stopTracks();
-        // eigenes Video sichtbar machen
+
+        // Sichtbares Video
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
         videoEl.srcObject = stream;
         await videoEl.play().catch(()=>{});
 
-        // ZXing kontinuierlich laufen lassen
-        const reader = new ZXing.BrowserQRCodeReader(); // bewusst QR-Only
+        // ZXing kontinuierlich
+        const reader = new ZXing.BrowserQRCodeReader();
         reader.reset();
         reader.decodeFromConstraints(
           { video: constraints.video, audio:false },
@@ -111,22 +127,22 @@
               lastHit = Date.now();
               onDecode(result.text);
             }
-            // Fehler im kontinuierlichen Scan ignorieren
+            // typische Nicht-Treffer-Fehler während des Scans ignorieren
           }
         );
 
         scanning = true;
         fallbackActive = false;
         lastHit = Date.now();
-        log('Scanner läuft (ZXing)…');
+        log(`Scanner läuft (ZXing)… [Kamera: ${facing}]`);
 
-        // Fallback nach 3.5s ohne Treffer
+        // Fallback erst nach längerer Zeit
         setTimeout(()=> {
-          if (scanning && Date.now() - lastHit > 3500 && !fallbackActive) {
+          if (scanning && Date.now() - lastHit > (FALLBACK_DELAY_MS - 500) && !fallbackActive) {
             log('Kein Treffer mit ZXing – Fallback aktiv (jsQR)…');
             startFallbackLoop();
           }
-        }, 3600);
+        }, FALLBACK_DELAY_MS);
 
       }catch(e){
         log(`Start-Fehler: ${e.name} – ${e.message}`);
@@ -164,7 +180,7 @@
       rescanBtn.style.display = 'inline-block';
       log(`QR erkannt: ${text}`);
 
-      // Dein Parsing + Weiterleitung (wie gewünscht)
+      // Beispiel: Parsing + Weiterleitung
       if (text && text.startsWith('$')){
         const m = text.match(/\$(FA.*?)\$/);
         if (m && m[1]){
@@ -183,7 +199,7 @@
 
     // UI
     switchBtn.addEventListener('click', async ()=>{
-      facing = (facing==='environment') ? 'user' : 'environment';
+      facing = (facing==='user') ? 'environment' : 'user';
       rescanBtn.style.display = 'none';
       scanning = true; fallbackActive = false;
       await startZXing();
@@ -197,7 +213,6 @@
 
     window.addEventListener('load', autoStart);
 
-    // Sichtbar halten, wenn man zurückkehrt
     document.addEventListener('visibilitychange', ()=>{
       if (document.visibilityState === 'visible' && videoEl.srcObject && videoEl.paused){
         videoEl.play().catch(()=>{});
