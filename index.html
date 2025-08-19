@@ -96,7 +96,8 @@
 </head>
 <body>
 <div id="scanner-container">
-  <video id="preview" autoplay playsinline></video>
+  <!-- wichtig: muted, sonst blocken manche Browser -->
+  <video id="preview" autoplay playsinline muted></video>
   <div class="darken"></div>
   <div class="clear-window"></div>
   <div class="scanline"></div>
@@ -110,7 +111,6 @@
 <!-- ZXing Library -->
 <script src="https://unpkg.com/@zxing/library@latest"></script>
 <script>
- const video = document.getElementById("preview");
  const switchBtn = document.getElementById("switchCamera");
  const rescanBtn = document.getElementById("rescan");
 
@@ -121,25 +121,25 @@
 
  async function startCamera(useFrontCam = true) {
    try {
-     // Alle Kameras abrufen
+     // Kameras abrufen
      devices = await ZXing.BrowserQRCodeReader.listVideoInputDevices();
      if (devices.length === 0) {
        console.error("Keine Kamera gefunden");
        return;
      }
 
-     // Front- oder Backkamera wählen
+     // Front oder Back wählen
      if (useFrontCam) {
        selectedDeviceId = devices.find(d => d.label.toLowerCase().includes("front"))?.deviceId || devices[0].deviceId;
      } else {
        selectedDeviceId = devices.find(d => d.label.toLowerCase().includes("back"))?.deviceId || devices[0].deviceId;
      }
 
-     // Reset, falls schon ein Stream läuft
+     // Reset vorheriger Stream
      codeReader.reset();
 
-     // Scanner starten
-     codeReader.decodeFromVideoDevice(selectedDeviceId, video, (result, err) => {
+     // Scanner starten → wichtig: "preview" als String!
+     codeReader.decodeFromVideoDevice(selectedDeviceId, 'preview', (result, err) => {
        if (result) {
          console.log("QR erkannt:", result.text);
          rescanBtn.style.display = "inline-block";
