@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>QR-Code Scanner</title>
+<style>
+
+  body, html {
+
+    margin: 0;
+
+    padding: 0;
+
+    overflow: hidden;
+
+    font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+
+    background: #f3f3f3;
+
+  }
+
+  #scanner-container {
+
+    position: relative;
+
+    width: 100vw;
+
+    height: 100vh;
+
+    overflow: hidden;
+
+    background: black;
+
+  }
+
+  video {
+
+    width: 100%;
+
+    height: 100%;
+
+    object-fit: cover;
+
+  }
+
+  /* Overlay + Schablone */
+
+  .overlay {
+
+    position: absolute;
+
+    top: 0; left: 0;
+
+    width: 100%; height: 100%;
+
+    pointer-events: none;
+
+    backdrop-filter: blur(8px);
+
+    -webkit-backdrop-filter: blur(8px);
+
+  }
+
+  .overlay::after {
+
+    content: "";
+
+    position: absolute;
+
+    border: 2px solid #0078D7;
+
+    border-radius: 4px;
+
+    box-sizing: border-box;
+
+  }
+
+  /* Scanlinie */
+
+  .scanline {
+
+    position: absolute;
+
+    background: rgba(0, 120, 215, 0.8);
+
+    border-radius: 1px;
+
+    animation: scanAnim 2s linear infinite;
+
+  }
+
+  @keyframes scanAnim {
+
+    0% { transform: translateY(0%); }
+
+    50% { transform: translateY(100%); }
+
+    100% { transform: translateY(0%); }
+
+  }
+
+  /* Buttons */
+
+  .controls {
+
+    position: absolute;
+
+    bottom: 20px;
+
+    left: 50%;
+
+    transform: translateX(-50%);
+
+    display: flex;
+
+    gap: 12px;
+
+    z-index: 10;
+
+  }
+
+  button {
+
+    padding: 10px 20px;
+
+    font-size: 15px;
+
+    border: none;
+
+    border-radius: 4px;
+
+    background-color: #0078D7;
+
+    color: white;
+
+    cursor: pointer;
+
+    transition: background 0.2s;
+
+  }
+
+  button:hover {
+
+    background-color: #005a9e;
+
+  }
+
+  button:disabled {
+
+    background-color: #c7c7c7;
+
+    cursor: default;
+
+  }
+</style>
+</head>
+<body>
+<div id="scanner-container">
+<video id="preview" autoplay playsinline></video>
+<div class="overlay"></div>
+<div class="scanline"></div>
+<div class="controls">
+<button id="switchCamera">Kamera wechseln</button>
+<button id="rescan" style="display:none;">Nochmal scannen</button>
+</div>
+<canvas id="canvas" hidden></canvas>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/jsqr/dist/jsQR.js"></script>
+<script>
+
+  const video = document.getElementById("preview");
+
+  const canvas = document.getElementById("canvas");
+
+  const context = canvas.getContext("2d");
+
+  const switchBtn = document.getElementById("switchCamera");
+
+  const rescanBtn = document.getElementById("rescan");
+
+  const overlay = document.querySelector('.overlay');
+
+  const scanline = document.querySelector('.scanline');
+
+  let currentStream = null;
+
+  let useFrontCamera = true;
+
+  let scanning = true;
+
+  async function startCamera() {
+
+    if (currentStream) {
+
+      currentStream.getTracks().forEach(track => track.stop());
+
+    }
+
+    const constraints = { video: { facingMode: useFrontCamera ? "user" : "environment" } };
+
+    try {
+
+      currentStream = await navigator.mediaDevices.getUserMedia(constraints);
+
+      video.srcObject = currentStream;
+
+      video.onloadedmetadata = () => {
+
+        scanning = true;
+
+        updateOverlay();
+
+        requestAnimationFrame(scanFrame);
+
+      };
+
+    } catch (err) {
+
+      console.error("Kamera-Fehler:", err);
+
+    }
+
+  }
+
+  function stopCamera() {
+
+    if (currentStream) currentStream.getTracks().forEach(track => track.stop());
+
+  }
+
+  function updateOverlay() {
+
+    const width = window.innerWidth * 0.6;
+
+    const height = window.innerHeight * 0.4;
+
+    const left = (window.innerWidth - width) / 2;
+
+    const top = (window.innerHeight - height) / 2;
+
+    // Overlay: invertiert + Aussparung
+
+    overlay.style.clipPath = `inset(${top}px ${window.innerWidth - left - width}px ${window.innerHeight - top - height}px ${left}px)`;
+
+    // Scanline
+
+    scanline.style.top = `${top}px`;
+
+    scanline.style.left = `${left}px`;
+
+    scanline.style.width = `${width}px`;
+
+    scanline.style.height = `2px`;
+
+  }
+
+  function scanFrame() {
+
+    if (!scanning) return;
+
+    if (video.readyState === video.HAVE_ENOUGH_DATA) {
+
+      canvas.width = video.videoWidth;
+
+      canvas.height = video.videoHeight;
+
+      context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      // Dynamischer Scanbereich
+
+      const scanWidth = canvas.width * 0.6;
+
+      const scanHeight = canvas.height * 0.4;
+
+      const scanX = (canvas.width - scanWidth) / 2;
+
+      const scanY = (canvas.height - scanHeight) / 2;
+
+      const imageData = context.getImageData(scanX, scanY, scanWidth, scanHeight);
+
+      const code = jsQR(imageData.data, scanWidth, scanHeight);
+
+      if (code && code.data.startsWith("$")) {
+
+        scanning = false;
+
+        stopCamera();
+
+        rescanBtn.style.display = "inline-block";
+
+        const qrString = code.data;
+
+        const match = qrString.match(/\$(FA.*?)\$/);
+
+        if (match && match[1]) {
+
+          const extractedValue = match[1];
+
+          console.log("Extrahierter Wert:", extractedValue);
+
+          const bcLink = `https://dein-bc-link.com/?id=${extractedValue}`;
+
+          window.location.href = bcLink;
+
+        } else {
+
+          console.log("QR-Code entspricht nicht dem FA-Format, wird ignoriert.");
+
+        }
+
+        return;
+
+      }
+
+    }
+
+    requestAnimationFrame(scanFrame);
+
+  }
+
+  switchBtn.addEventListener("click", () => {
+
+    useFrontCamera = !useFrontCamera;
+
+    startCamera();
+
+  });
+
+  rescanBtn.addEventListener("click", () => {
+
+    rescanBtn.style.display = "none";
+
+    startCamera();
+
+  });
+
+  document.addEventListener('visibilitychange', () => {
+
+    if (document.visibilityState === 'visible' && !scanning) {
+
+      rescanBtn.style.display = "inline-block";
+
+    }
+
+  });
+
+  window.addEventListener('resize', updateOverlay);
+
+  window.addEventListener('orientationchange', updateOverlay);
+
+  startCamera();
+</script>
+</body>
+</html>
+ 
