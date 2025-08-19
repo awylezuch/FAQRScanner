@@ -3,13 +3,13 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>QR-Code Scanner (ZXing, Auto + Fallback)</title>
+<title>QR-Code Scanner (ZXing + Fallback)</title>
 <style>
   :root { --accent:#0078d7; }
   html,body{margin:0;padding:0;height:100%;background:#000;color:#fff;font-family:system-ui,"Segoe UI",Roboto,Arial,sans-serif}
   #scanner-container{position:relative;width:100vw;height:100vh;overflow:hidden;background:#000}
   #preview{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:#000;z-index:0}
-  .darken{position:absolute;inset:0;background:rgba(0,0,0,.4);z-index:1;pointer-events:none}
+  .darken{position:absolute;inset:0;background:rgba(0,0,0,.35);z-index:1;pointer-events:none}
   .clear-window{position:absolute;top:30%;left:20%;width:60%;height:40%;border:3px solid var(--accent);border-radius:8px;background:transparent;z-index:2;pointer-events:none;box-shadow:0 0 0 9999px rgba(0,0,0,.25)}
   .scanline{position:absolute;left:20%;width:60%;height:2px;background:rgba(0,120,215,.9);border-radius:1px;animation:scanAnim 2s linear infinite;z-index:3;pointer-events:none}
   @keyframes scanAnim{0%{top:30%}50%{top:70%}100%{top:30%}}
@@ -25,7 +25,6 @@
 </head>
 <body>
   <div id="scanner-container">
-    <!-- wichtig: muted + playsinline -->
     <video id="preview" autoplay playsinline muted></video>
 
     <div class="darken"></div>
@@ -46,7 +45,10 @@
     </div>
   </div>
 
+  <!-- ZXing & jsQR -->
   <script src="https://unpkg.com/@zxing/library@latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jsqr/dist/jsQR.js"></script>
+
   <script>
     const videoEl      = document.getElementById('preview');
     const statusEl     = document.getElementById('status');
@@ -56,10 +58,21 @@
     const tapOverlay   = document.getElementById('tapToStart');
     const startNowBtn  = document.getElementById('startNow');
 
-    const reader = new ZXing.BrowserQRCodeReader();
+    // Canvas für Fallback
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+
+    // ZXing mit Hints
+    const hints = new Map();
+    hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.QR_CODE]);
+    hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+    const reader = new ZXing.BrowserMultiFormatReader(hints);
+
     let devices  = [];
-    let facing   = 'environment'; // 'environment' | 'user'
+    let facing   = 'environment'; // bevorzugt Rückkamera
     let scanning = false;
+    let fallbackActive = false;
+    let lastDetectTs = 0;
 
     function log(msg){ console.log(msg); statusEl.textContent = typeof msg==='string'? msg : JSON.stringify(msg); }
 
@@ -71,7 +84,7 @@
 
     async function listCameras(){
       try{
-        devices = await ZXing.BrowserQRCodeReader.listVideoInputDevices();
+        devices = await ZXing.BrowserMultiFormatReader.listVideoInputDevices();
         cameraSelect.innerHTML = '';
         devices.forEach((d,i)=>{
           const opt = document.createElement('option');
@@ -79,73 +92,80 @@
           opt.textContent = d.label || `Kamera ${i+1}`;
           cameraSelect.appendChild(opt);
         });
-        log(devices.length ? `Gefundene Kameras: ${devices.length}` : 'Keine Kamera gefunden.');
+        if (!devices.length) log('Keine Kamera gefunden.');
       }catch(e){ log(`Geräteliste-Fehler: ${e.name} – ${e.message}`); }
     }
 
-    async function startWithConstraints(prefFacing){
-      // Versuch 1: exact facing
-      let constraints = { video: { facingMode: { exact: prefFacing } }, audio:false };
-      let ok = await tryStart(constraints);
-      if (ok) return true;
+    function getScanRect(video) {
+      // nutzt dieselben Prozente wie die CSS-Box (60% Breite, 40% Höhe; zentriert)
+      const vw = video.videoWidth  || 1280;
+      const vh = video.videoHeight || 720;
+      const sw = Math.floor(vw * 0.60);
+      const sh = Math.floor(vh * 0.40);
+      const sx = Math.floor((vw - sw) / 2);
+      const sy = Math.floor((vh - sh) / 2);
+      return { sx, sy, sw, sh };
+    }
 
-      // Versuch 2: ideal facing
-      constraints = { video: { facingMode: { ideal: prefFacing } }, audio:false };
-      ok = await tryStart(constraints);
-      if (ok) return true;
+    async function startZXingWithConstraints(prefFacing){
+      const common = {
+        width:  { ideal: 1920 },
+        height: { ideal: 1080 },
+        advanced: [{ focusMode: "continuous" }]
+      };
 
-      // Versuch 3: andere Seite
-      const other = prefFacing === 'environment' ? 'user' : 'environment';
-      constraints = { video: { facingMode: { ideal: other } }, audio:false };
-      ok = await tryStart(constraints);
-      if (ok){ facing = other; return true; }
+      const tries = [
+        { video: { ...common, facingMode: { exact: prefFacing } }, audio:false },
+        { video: { ...common, facingMode: { ideal: prefFacing } }, audio:false },
+        { video: { ...common, facingMode: { ideal: (prefFacing==='environment'?'user':'environment') } }, audio:false },
+        { video: { ...common }, audio:false }
+      ];
 
-      // Versuch 4: generisch
-      constraints = { video: true, audio:false };
-      ok = await tryStart(constraints);
-      return ok;
+      for (const constraints of tries){
+        const ok = await tryStart(constraints);
+        if (ok) return true;
+      }
+      return false;
     }
 
     async function tryStart(constraints){
       try{
         stopTracks();
-        // Sichtbares Video sicherstellen
+
+        // Sichtbares Video
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
         videoEl.srcObject = stream;
         await videoEl.play().catch(()=>{});
 
-        // ZXing über dieselben Constraints starten
+        // ZXing kontinuierlich
         reader.reset();
-        await reader.decodeFromConstraints(
+        reader.decodeFromConstraints(
           { video: constraints.video, audio:false },
           'preview',
           (result, err) => {
-            if (result && scanning){
-              log(`QR erkannt: ${result.text}`);
-              rescanBtn.style.display = 'inline-block';
-              scanning = false;
-
-              const txt = result.text || '';
-              if (txt.startsWith('$')){
-                const m = txt.match(/\$(FA.*?)\$/);
-                if (m && m[1]){
-                  const extracted = m[1];
-                  const bcLink = `https://dein-bc-link.com/?id=${extracted}`;
-                  window.location.href = bcLink;
-                }
-              }
+            if (!scanning) return;
+            if (result){
+              lastDetectTs = Date.now();
+              onDecode(result.text);
             }
+            // Fehler während des kontinuierlichen Scans ignorieren (kommen häufig)
           }
         );
 
-        // Kameraliste (mit Labels) nach erfolgreichem Start laden
         await listCameras();
-        // Versuche, Auswahl annähernd zu setzen
-        const guess = devices.find(d => new RegExp(facing,'i').test(d.label || ''));
-        if (guess && guess.deviceId){ cameraSelect.value = guess.deviceId; }
-
         scanning = true;
-        log('Scanner läuft.');
+        fallbackActive = false;
+        lastDetectTs = Date.now();
+        log('Scanner läuft (ZXing)…');
+
+        // Fallback nach 4 Sekunden ohne Treffer aktivieren
+        setTimeout(()=> {
+          if (scanning && Date.now() - lastDetectTs > 3500 && !fallbackActive) {
+            log('Kein Treffer mit ZXing – Fallback aktiviert (jsQR im Fenster)…');
+            startFallbackLoop();
+          }
+        }, 4000);
+
         return true;
       }catch(e){
         log(`Start-Fehler: ${e.name} – ${e.message}`);
@@ -155,77 +175,51 @@
       }
     }
 
-    async function autoStart(){
-      // 1) Einmalige Permission erzwingen (zeigt ggf. Prompt)
-      try{
-        log('Berechtigung anfordern…');
-        const tmp = await navigator.mediaDevices.getUserMedia({ video:true, audio:false });
-        tmp.getTracks().forEach(t=>t.stop());
-        log('Berechtigung OK.');
-      }catch(e){
-        log(`getUserMedia-Fehler: ${e.name} – ${e.message}`);
-        // Wenn blockiert → Overlay anzeigen
-        tapOverlay.style.display = 'flex';
-        return;
-      }
+    function startFallbackLoop(){
+      fallbackActive = true;
+      const loop = () => {
+        if (!scanning || !fallbackActive) return;
 
-      // 2) Start mit bevorzugter Kamera
-      const ok = await startWithConstraints(facing);
-      if (!ok){
-        // Browser verlangt Interaktion → Overlay zeigen
-        tapOverlay.style.display = 'flex';
-      }else{
-        tapOverlay.style.display = 'none';
+        const vw = videoEl.videoWidth, vh = videoEl.videoHeight;
+        if (vw && vh){
+          const { sx, sy, sw, sh } = getScanRect(videoEl);
+          canvas.width = sw; canvas.height = sh;
+          try{
+            ctx.drawImage(videoEl, sx, sy, sw, sh, 0, 0, sw, sh);
+            const imageData = ctx.getImageData(0, 0, sw, sh);
+            const code = jsQR(imageData.data, sw, sh, { inversionAttempts: "attemptBoth" });
+            if (code && code.data){
+              onDecode(code.data);
+              return;
+            }
+          }catch(e){
+            // Zeichnen kann bei sehr altem Gerät mal fehlschlagen – ignorieren und weiter
+          }
+        }
+        requestAnimationFrame(loop);
+      };
+      requestAnimationFrame(loop);
+    }
+
+    function onDecode(text){
+      if (!scanning) return;
+      scanning = false;
+      fallbackActive = false;
+      rescanBtn.style.display = 'inline-block';
+      log(`QR erkannt: ${text}`);
+
+      // Dein Parsing / Weiterleitung
+      if (text && text.startsWith('$')){
+        const m = text.match(/\$(FA.*?)\$/);
+        if (m && m[1]){
+          const extracted = m[1];
+          const bcLink = `https://dein-bc-link.com/?id=${extracted}`;
+          window.location.href = bcLink;
+        }
       }
     }
 
-    // UI-Events
-    startNowBtn.addEventListener('click', async ()=>{
-      tapOverlay.style.display = 'none';
-      await autoStart();
-    });
-
-    switchBtn.addEventListener('click', async ()=>{
-      facing = (facing === 'environment') ? 'user' : 'environment';
-      await startWithConstraints(facing);
-    });
-
-    cameraSelect.addEventListener('change', async (e)=>{
-      const id = e.target.value;
-      if (!id) return;
-      // Wenn eine deviceId existiert, starte gezielt
-      stopTracks();
-      reader.reset();
+    async function ensurePermission(){
       try{
-        // Sichtbar machen
-        const stream = await navigator.mediaDevices.getUserMedia({ video:{ deviceId:{ exact:id } }, audio:false });
-        videoEl.srcObject = stream; await videoEl.play().catch(()=>{});
-        // ZXing
-        await reader.decodeFromVideoDevice(id, 'preview', (result, err)=>{
-          if (result && scanning){
-            log(`QR erkannt: ${result.text}`);
-            rescanBtn.style.display = 'inline-block';
-            scanning = false;
-          }
-        });
-        log('Scanner läuft (gewählte Kamera).');
-      }catch(err){
-        log(`Start(gewählt)-Fehler: ${err.name} – ${err.message}`);
-      }
-    });
-
-    rescanBtn.addEventListener('click', async ()=>{
-      rescanBtn.style.display = 'none';
-      scanning = true;
-      await startWithConstraints(facing);
-    });
-
-    window.addEventListener('load', autoStart);
-    document.addEventListener('visibilitychange', ()=>{
-      if (document.visibilityState === 'visible' && videoEl.srcObject && videoEl.paused){
-        videoEl.play().catch(()=>{});
-      }
-    });
-  </script>
-</body>
-</html>
+        log('Berechtigung anfordern…');
+        const tmp = await navig
