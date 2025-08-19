@@ -2,7 +2,7 @@
 <html lang="de">
 <head>
 <meta charset="UTF-8">
-<title>QR-Code Scanner</title>
+<title>QR-Code Scanner (ZXing)</title>
 <style>
  body, html {
    margin: 0;
@@ -37,7 +37,7 @@
    z-index: 1;
  }
 
- /* Klares Scan-Fenster */
+ /* Klares Scan-Fenster (Loch) */
  .clear-window {
    position: absolute;
    top: 30%; left: 20%;
@@ -73,7 +73,7 @@
    transform: translateX(-50%);
    display: flex;
    gap: 12px;
-   z-index: 9999; /* Immer ganz vorne */
+   z-index: 9999; /* Ganz vorne */
  }
  button {
    padding: 15px 25px;
@@ -105,92 +105,73 @@
     <button id="switchCamera">Kamera wechseln</button>
     <button id="rescan" style="display:none;">Nochmal scannen</button>
   </div>
-  <canvas id="canvas" hidden></canvas>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/jsqr/dist/jsQR.js"></script>
+<!-- ZXing Library -->
+<script src="https://unpkg.com/@zxing/library@latest"></script>
 <script>
  const video = document.getElementById("preview");
- const canvas = document.getElementById("canvas");
- const context = canvas.getContext("2d");
  const switchBtn = document.getElementById("switchCamera");
  const rescanBtn = document.getElementById("rescan");
- let currentStream = null;
- let useFrontCamera = true;
- let scanning = true;
 
- async function startCamera() {
-   if (currentStream) {
-     currentStream.getTracks().forEach(track => track.stop());
-   }
-   const constraints = { video: { facingMode: useFrontCamera ? "user" : "environment" } };
+ const codeReader = new ZXing.BrowserQRCodeReader();
+ let selectedDeviceId = null;
+ let devices = [];
+ let useFront = true;
+
+ async function startCamera(useFrontCam = true) {
    try {
-     currentStream = await navigator.mediaDevices.getUserMedia(constraints);
-     video.srcObject = currentStream;
-     video.onloadedmetadata = () => {
-       scanning = true;
-       requestAnimationFrame(scanFrame);
-     };
-   } catch (err) {
-     console.error("Kamera-Fehler:", err);
-   }
- }
-
- function stopCamera() {
-   if (currentStream) currentStream.getTracks().forEach(track => track.stop());
- }
-
- function scanFrame() {
-   if (!scanning) return;
-   if (video.readyState === video.HAVE_ENOUGH_DATA) {
-     canvas.width = video.videoWidth;
-     canvas.height = video.videoHeight;
-     context.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-     // Scanfenster (zentral 60% Breite, 40% Höhe)
-     const scanWidth = canvas.width * 0.6;
-     const scanHeight = canvas.height * 0.4;
-     const scanX = (canvas.width - scanWidth) / 2;
-     const scanY = (canvas.height - scanHeight) / 2;
-     const imageData = context.getImageData(scanX, scanY, scanWidth, scanHeight);
-
-     const code = jsQR(imageData.data, scanWidth, scanHeight);
-     if (code && code.data.startsWith("$")) {
-       scanning = false;
-       stopCamera();
-       rescanBtn.style.display = "inline-block";
-       const qrString = code.data;
-       const match = qrString.match(/\$(FA.*?)\$/);
-       if (match && match[1]) {
-         const extractedValue = match[1];
-         console.log("Extrahierter Wert:", extractedValue);
-         const bcLink = `https://dein-bc-link.com/?id=${extractedValue}`;
-         window.location.href = bcLink;
-       } else {
-         console.log("QR-Code entspricht nicht dem FA-Format, wird ignoriert.");
-       }
+     // Alle Kameras abrufen
+     devices = await ZXing.BrowserQRCodeReader.listVideoInputDevices();
+     if (devices.length === 0) {
+       console.error("Keine Kamera gefunden");
        return;
      }
+
+     // Front- oder Backkamera wählen
+     if (useFrontCam) {
+       selectedDeviceId = devices.find(d => d.label.toLowerCase().includes("front"))?.deviceId || devices[0].deviceId;
+     } else {
+       selectedDeviceId = devices.find(d => d.label.toLowerCase().includes("back"))?.deviceId || devices[0].deviceId;
+     }
+
+     // Reset, falls schon ein Stream läuft
+     codeReader.reset();
+
+     // Scanner starten
+     codeReader.decodeFromVideoDevice(selectedDeviceId, video, (result, err) => {
+       if (result) {
+         console.log("QR erkannt:", result.text);
+         rescanBtn.style.display = "inline-block";
+
+         // Beispiel-Parsing wie bei dir
+         if (result.text.startsWith("$")) {
+           const match = result.text.match(/\$(FA.*?)\$/);
+           if (match && match[1]) {
+             const extractedValue = match[1];
+             const bcLink = `https://dein-bc-link.com/?id=${extractedValue}`;
+             window.location.href = bcLink;
+           }
+         }
+       }
+     });
+   } catch (e) {
+     console.error("Fehler beim Start:", e);
    }
-   requestAnimationFrame(scanFrame);
  }
 
+ // Buttons
  switchBtn.addEventListener("click", () => {
-   useFrontCamera = !useFrontCamera;
-   startCamera();
+   useFront = !useFront;
+   startCamera(useFront);
  });
  rescanBtn.addEventListener("click", () => {
    rescanBtn.style.display = "none";
-   startCamera();
+   startCamera(useFront);
  });
 
- document.addEventListener('visibilitychange', () => {
-   if (document.visibilityState === 'visible' && !scanning) {
-     rescanBtn.style.display = "inline-block";
-   }
- });
-
- startCamera();
+ // Start beim Laden
+ startCamera(true);
 </script>
 </body>
 </html>
