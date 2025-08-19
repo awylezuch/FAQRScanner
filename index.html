@@ -3,10 +3,14 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>QR-Scanner (stabil, jsQR, Front default)</title>
+<title>QR-Scanner (Front, jsQR + ZXing Fallback)</title>
 <style>
   :root { --accent:#0078d7; }
-  html,body{margin:0;padding:0;height:100%;background:#000;color:#fff;font-family:system-ui,"Segoe UI",Roboto,Arial,sans-serif;overflow:hidden}
+  html,body{
+    margin:0;padding:0;height:100%;
+    background:#000;color:#fff;font-family:system-ui,"Segoe UI",Roboto,Arial,sans-serif;
+    overflow:hidden;
+  }
   #wrap{position:relative;width:100vw;height:100vh;background:#000}
   video{
     position:fixed; inset:0;
@@ -17,10 +21,19 @@
     transform:none !important; -webkit-transform:none !important;
     will-change:transform; backface-visibility:hidden; -webkit-backface-visibility:hidden;
   }
-  /* klares Scanfenster + Linie (sehr leichte Overlays, kein Shadow/Mask) */
-  .window{position:absolute;top:30%;left:20%;width:60%;height:40%;border:3px solid var(--accent);border-radius:8px;z-index:2;pointer-events:none}
-  .scanline{position:absolute;left:20%;width:60%;height:2px;background:rgba(0,120,215,.95);border-radius:1px;animation:scanAnim 2s linear infinite;z-index:3;pointer-events:none}
-  @keyframes scanAnim{0%{top:30%}50%{top:70%}100%{top:30%}}
+  /* klares Scanfenster + Linie (leicht, ohne Masken) */
+  .window{
+    position:absolute; top:30%; left:20%; width:60%; height:40%;
+    border:3px solid var(--accent); border-radius:8px;
+    z-index:2; pointer-events:none;
+  }
+  .scanline{
+    position:absolute; left:20%; width:60%; height:2px;
+    background:rgba(0,120,215,.95); border-radius:1px;
+    animation:scanAnim 2s linear infinite; z-index:3; pointer-events:none;
+  }
+  @keyframes scanAnim { 0%{top:30%} 50%{top:70%} 100%{top:30%} }
+
   /* Controls OBEN fixiert */
   .controls{
     position:fixed; top:calc(env(safe-area-inset-top, 0px) + 10px);
@@ -28,9 +41,18 @@
     display:flex; gap:10px; z-index:10000;
     align-items:center; flex-wrap:wrap; justify-content:center; max-width:92vw;
   }
-  button{appearance:none;border:none;border-radius:8px;padding:10px 14px;font-size:15px;cursor:pointer;background:var(--accent);color:#fff}
-  button.secondary{background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.25)}
-  #status{position:fixed;left:12px;right:12px;top:calc(env(safe-area-inset-top, 0px) + 56px);z-index:10000;font-size:13px;line-height:1.25;color:#eee;text-shadow:0 1px 2px rgba(0,0,0,.8);max-height:25vh;overflow:auto;padding:6px 8px;background:rgba(0,0,0,.35);border-radius:6px}
+  button{
+    appearance:none;border:none;border-radius:8px;
+    padding:10px 14px;font-size:15px;cursor:pointer;
+    background:var(--accent);color:#fff;
+  }
+  button.secondary{ background:rgba(255,255,255,.12); border:1px solid rgba(255,255,255,.25) }
+  #status{
+    position:fixed; left:12px; right:12px; top:calc(env(safe-area-inset-top, 0px) + 56px);
+    z-index:10000; font-size:13px; line-height:1.25; color:#eee;
+    text-shadow:0 1px 2px rgba(0,0,0,.8);
+    max-height:25vh; overflow:auto; padding:6px 8px; background:rgba(0,0,0,.35); border-radius:6px;
+  }
 </style>
 </head>
 <body>
@@ -48,28 +70,49 @@
     </div>
   </div>
 
-  <!-- jsQR -->
+  <!-- Bibliotheken -->
   <script src="https://cdn.jsdelivr.net/npm/jsqr/dist/jsQR.js"></script>
+  <script src="https://unpkg.com/@zxing/library@latest"></script>
 
   <script>
-    const vid    = document.getElementById('vid');
-    const statusEl = document.getElementById('status');
-    const btnSwap  = document.getElementById('switch');
-    const btnRescan= document.getElementById('rescan');
+    const vid     = document.getElementById('vid');
+    const statusEl= document.getElementById('status');
+    const btnSwap = document.getElementById('switch');
+    const btnRes  = document.getElementById('rescan');
 
-    // Scan-ROI = wie das Fenster (zentral 60% x 40%)
+    // === Einstellungen ===
+    const FRONT_DEFAULT       = true;         // Frontkamera standard
+    const ZXING_DELAY_MS      = 8000;         // so lange nur jsQR, dann ZXing-Fallback
+    const ZXING_PERIOD_MS     = 700;          // ZXing höchstens 1x pro ~0.7s versuchen
+    const ROI_W               = 0.60;         // ROI Breite relativ
+    const ROI_H               = 0.40;         // ROI Höhe relativ
+
+    // Canvas fürs ROI
     const canvas = document.createElement('canvas');
     const ctx    = canvas.getContext('2d', { willReadFrequently: true });
 
-    let stream=null, scanning=false, switching=false;
-    let preferredFacing = 'user'; // Front standard
+    // ZXing-Reader mit erweiterten Formaten (falls verfügbar)
+    const hints = new Map();
+    const formats = [ ZXing.BarcodeFormat.QR_CODE ];
+    if (ZXing.BarcodeFormat.MICRO_QR_CODE) formats.push(ZXing.BarcodeFormat.MICRO_QR_CODE);
+    if (ZXing.BarcodeFormat.RM_QR_CODE)    formats.push(ZXing.BarcodeFormat.RM_QR_CODE);
+    hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, formats);
+    hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+    const zxingReader = new ZXing.BrowserMultiFormatReader(hints);
 
-    const sleep = (ms)=> new Promise(r=>setTimeout(r,ms));
-    const log   = (m)=>{ console.log(m); statusEl.textContent = (typeof m==='string')? m : JSON.stringify(m); };
+    let stream = null;
+    let scanning = false;
+    let useFront = FRONT_DEFAULT;
+    let lastZX = 0;
+    let zxingEnabled = false;
 
-    function stop(){
+    const log = (m)=>{ console.log(m); statusEl.textContent = (typeof m==='string') ? m : JSON.stringify(m); };
+
+    function stopStream(){
       if (stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
-      vid.srcObject=null; scanning=false;
+      vid.srcObject = null;
+      scanning = false;
+      zxingEnabled = false;
     }
 
     async function ensurePermission(){
@@ -79,26 +122,27 @@
         tmp.getTracks().forEach(t=>t.stop());
         log('Berechtigung OK.');
         return true;
-      }catch(e){ log(`getUserMedia-Fehler: ${e.name} – ${e.message}`); return false; }
+      }catch(e){
+        log(`getUserMedia-Fehler: ${e.name} – ${e.message}`);
+        return false;
+      }
     }
 
-    function roi(){
+    function roiRect(){
       const vw = vid.videoWidth  || 1280;
       const vh = vid.videoHeight || 720;
-      const sw = Math.floor(vw * 0.60);
-      const sh = Math.floor(vh * 0.40);
-      const sx = Math.floor((vw - sw)/2);
-      const sy = Math.floor((vh - sh)/2);
+      const sw = Math.floor(vw * ROI_W);
+      const sh = Math.floor(vh * ROI_H);
+      const sx = Math.floor((vw - sw) / 2);
+      const sy = Math.floor((vh - sh) / 2);
       return { sx, sy, sw, sh };
     }
 
     // Wert aus Rohtext -> 'extracted'
     function extractValue(txt){
-      let m = txt.match(/\$(FA[^$]+)\$/);
-      if (m && m[1]) return m[1];          // $FA…$
-      m = txt.match(/^(FA[^$]+)/);
-      if (m && m[1]) return m[1];          // FA…$…
-      return txt;                           // sonst komplett
+      let m = txt.match(/\$(FA[^$]+)\$/); if (m && m[1]) return m[1]; // $FA…$
+      m = txt.match(/^(FA[^$]+)/);        if (m && m[1]) return m[1]; // FA…$…
+      return txt; // sonst komplett
     }
 
     function navigateToBC(extracted){
@@ -112,86 +156,100 @@
 
     function onDecode(extracted){
       if (!scanning) return;
-      scanning=false;
-      btnRescan.style.display = 'inline-block';
+      scanning = false;
+      btnRes.style.display = 'inline-block';
       log(`QR erkannt: ${extracted}`);
       navigateToBC(extracted);
     }
 
-    function scanLoop(){
+    // Haupt-Scanloop: erst jsQR, später periodisch ZXing über Canvas-DataURL
+    async function scanLoop(){
       if (!scanning) return;
+
       const vw = vid.videoWidth, vh = vid.videoHeight;
       if (vw && vh){
-        const { sx, sy, sw, sh } = roi();
+        const { sx, sy, sw, sh } = roiRect();
+        // 1) ROI in Canvas zeichnen
         canvas.width = sw; canvas.height = sh;
-        try{
+        try {
           ctx.drawImage(vid, sx, sy, sw, sh, 0, 0, sw, sh);
+        } catch(_) { /* Frame noch nicht bereit */ }
+
+        // 2) jsQR (schnell) – auf jedem Frame
+        try {
           const img = ctx.getImageData(0, 0, sw, sh);
           const code = jsQR(img.data, sw, sh, { inversionAttempts: "attemptBoth" });
-          if (code && code.data){
+          if (code && code.data) {
             const extracted = extractValue(code.data);
             onDecode(extracted);
             return;
           }
-        }catch(e){ /* Ignorieren und weiterscannen */ }
+        } catch(_) {}
+
+        // 3) ZXing (teurer) – erst nach festem Delay, dann ratebegrenzt
+        const now = Date.now();
+        if (now > lastZX + ZXING_PERIOD_MS && zxingEnabled) {
+          lastZX = now;
+          try {
+            const dataUrl = canvas.toDataURL('image/png'); // Snapshot
+            // decodeFromImageUrl öffnet KEINEN neuen Kamerastream
+            const result = await zxingReader.decodeFromImageUrl(dataUrl);
+            if (result && result.getText) {
+              const extracted = extractValue(result.getText());
+              onDecode(extracted);
+              return;
+            }
+          } catch(err) {
+            // NotFoundException => kein Code im Bild; leise ignorieren
+          }
+        }
       }
+
       requestAnimationFrame(scanLoop);
     }
 
-    async function startFacing(facing, attempt=0){
-      if (switching) return;
-      switching = true;
+    async function startCamera(){
+      stopStream();
       try{
-        stop();
-        await sleep(200); // kurze Pause, bis Hardware frei ist
-
-        // Minimal-Konstraints – genau wie in deinem funktionierenden camera_test
-        const constraints = { video: { facingMode: { ideal: facing } }, audio: false };
+        const constraints = { video: { facingMode: { ideal: useFront ? 'user' : 'environment' } }, audio:false };
         stream = await navigator.mediaDevices.getUserMedia(constraints);
         vid.srcObject = stream;
 
-        // auf Metadaten warten → dann play() (sonst schwarzes Bild)
+        // Auf Metadaten warten, dann play() (verhindert schwarzes Bild)
         await new Promise(res => { if (vid.readyState >= 2) res(); else vid.onloadedmetadata = res; });
         await vid.play().catch(()=>{});
 
-        // kein Spiegeln/Transform (Workaround gegen Edge-Bugs)
-        vid.style.transform = 'none';
-
+        // Startstatus
+        log(`Kamera aktiv – ${useFront ? 'Front' : 'Back'}`);
+        btnRes.style.display = 'none';
         scanning = true;
-        btnRescan.style.display = 'none';
-        log(`Scanner läuft – Kamera: ${facing}`);
-
-        // Scan starten
+        zxingEnabled = false;
+        setTimeout(() => { zxingEnabled = true; }, ZXING_DELAY_MS); // erst später ZXing zuschalten
         requestAnimationFrame(scanLoop);
-
       }catch(e){
         log(`Start-Fehler: ${e.name} – ${e.message}`);
-        if (e.name === 'NotReadableError' && attempt < 3){
-          await sleep(500);
-          await startFacing(facing, attempt+1);
-        }
-      }finally{
-        switching = false;
       }
-    }
-
-    async function autoStart(){
-      const ok = await ensurePermission();
-      if (!ok) return;
-      await startFacing(preferredFacing);
     }
 
     // UI
     btnSwap.addEventListener('click', async ()=>{
-      preferredFacing = (preferredFacing === 'user') ? 'environment' : 'user';
-      await startFacing(preferredFacing);
+      useFront = !useFront;
+      await startCamera();
+    });
+    btnRes.addEventListener('click', async ()=>{
+      btnRes.style.display = 'none';
+      scanning = true;
+      requestAnimationFrame(scanLoop);
     });
 
-    btnRescan.addEventListener('click', async ()=>{
-      await startFacing(preferredFacing);
+    // Autostart
+    window.addEventListener('load', async ()=>{
+      const ok = await ensurePermission();
+      if (!ok) return;
+      await startCamera();
     });
 
-    window.addEventListener('load', autoStart);
+    // Sichtbar halten, wenn man zurückkehrt
     document.addEventListener('visibilitychange', ()=>{
       if (document.visibilityState === 'visible' && vid.srcObject && vid.paused){
         vid.play().catch(()=>{});
