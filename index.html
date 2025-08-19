@@ -185,7 +185,7 @@
         const m = text.match(/\$(FA.*?)\$/);
         if (m && m[1]){
           const extracted = m[1];
-          const bcLink = `https://dein-bc-link.com/?id=${extracted}`;
+          const bcLink = `https://bcprod01.schwegler.de/BCProd/tabet?page=99000831&company=Schwegler%20Werkzeugfabrik&dc=0&filter=%27No.%27%20IS%20%27{extracted}%27`;
           window.location.href = bcLink;
         }
       }
@@ -221,3 +221,4 @@
   </script>
 </body>
 </html>
+
