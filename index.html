@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>QR-Code Scanner (Frontcam + längerer Fallback)</title>
+<title>QR-Scanner (stabiler Switch, Front default)</title>
 <style>
   :root { --accent:#0078d7; }
   html,body{margin:0;padding:0;height:100%;background:#000;color:#fff;font-family:system-ui,"Segoe UI",Roboto,Arial,sans-serif;overflow:hidden}
@@ -18,13 +18,13 @@
     border-radius:1px;animation:scanAnim 2s linear infinite;z-index:3;pointer-events:none}
   @keyframes scanAnim{0%{top:30%}50%{top:70%}100%{top:30%}}
 
-  /* Controls jetzt OBEN fixiert (nicht hinter Browser-UI) */
+  /* Controls OBEN fixiert */
   .controls{
-    position:fixed; /* fix statt absolute */
+    position:fixed;
     top:calc(env(safe-area-inset-top, 0px) + 10px);
-    left:50%;
-    transform:translateX(-50%);
-    display:flex;gap:10px;z-index:10000;align-items:center;flex-wrap:wrap;justify-content:center;max-width:92vw
+    left:50%; transform:translateX(-50%);
+    display:flex; gap:10px; z-index:10000;
+    align-items:center; flex-wrap:wrap; justify-content:center; max-width:92vw;
   }
   button{appearance:none;border:none;border-radius:8px;padding:10px 14px;font-size:15px;cursor:pointer;background:var(--accent);color:#fff}
   button.secondary{background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.25)}
@@ -59,35 +59,40 @@
     const switchBtn = document.getElementById('switchCamera');
     const rescanBtn = document.getElementById('rescan');
 
-    const FALLBACK_DELAY_MS = 8000; // <- länger warten, bevor jsQR-Fallback startet
+    const FALLBACK_DELAY_MS = 8000; // Fallback später
+    const RELEASE_WAIT_MS   = 300;  // kurze Pause beim Switch
+    const RETRY_ON_BUSY_MS  = 600;  // Retry bei NotReadableError
 
-    // Fallback-Canvas für jsQR
+    // Canvas für Fallback (jsQR)
     const canvas = document.createElement('canvas');
     const ctx    = canvas.getContext('2d');
 
-    // Standard jetzt FRONT-KAMERA
-    let facing = 'user';            // 'user' = Front | 'environment' = Rück
+    // Geräte-IDs
+    let devices = [];
+    let frontId = null;
+    let backId  = null;
+    let currentDeviceId = null;
+
+    // Zustände
     let scanning = false;
     let fallbackActive = false;
     let lastHit = 0;
+    let switching = false; // Reentrancy Lock
+
+    // ZXing Reader (eine Instanz)
+    const reader = new ZXing.BrowserQRCodeReader();
 
     function log(msg){ console.log(msg); statusEl.textContent = typeof msg==='string'? msg : JSON.stringify(msg); }
 
-    function stopTracks(){
+    function stopCamera(){
+      try { reader.reset(); } catch(e){}
       const s = videoEl.srcObject;
       if (s && s.getTracks){ s.getTracks().forEach(t=>t.stop()); }
       videoEl.srcObject = null;
+      currentDeviceId = null;
     }
 
-    function getScanRect(){
-      const vw = videoEl.videoWidth  || 1280;
-      const vh = videoEl.videoHeight || 720;
-      const sw = Math.floor(vw * 0.60);
-      const sh = Math.floor(vh * 0.40);
-      const sx = Math.floor((vw - sw) / 2);
-      const sy = Math.floor((vh - sh) / 2);
-      return { sx, sy, sw, sh };
-    }
+    function sleep(ms){ return new Promise(r=>setTimeout(r, ms)); }
 
     async function ensurePermission(){
       try{
@@ -102,13 +107,77 @@
       }
     }
 
-    async function startZXing(){
-      const constraints = {
-        video: { facingMode: { ideal: facing }, width:{ideal:1920}, height:{ideal:1080}, advanced:[{focusMode:"continuous"}] },
-        audio:false
-      };
+    async function loadDevices(){
+      devices = await ZXing.BrowserQRCodeReader.listVideoInputDevices();
+      // Heuristik: anhand Label Front/Back bestimmen
+      const find = (rx)=> devices.find(d => rx.test((d.label||'').toLowerCase()))?.deviceId || null;
+      frontId = find(/front|user/);
+      backId  = find(/back|rear|environment/);
+      if (!frontId && devices[0]) frontId = devices[0].deviceId;
+      if (!backId  && devices[1]) backId  = devices[1].deviceId || frontId;
+      log(`Kameras gefunden: ${devices.length} | Front=${!!frontId} Back=${!!backId}`);
+    }
+
+    function getScanRect(){
+      const vw = videoEl.videoWidth  || 1280;
+      const vh = videoEl.videoHeight || 720;
+      const sw = Math.floor(vw * 0.60);
+      const sh = Math.floor(vh * 0.40);
+      const sx = Math.floor((vw - sw) / 2);
+      const sy = Math.floor((vh - sh) / 2);
+      return { sx, sy, sw, sh };
+    }
+
+    // >> Weiterleitung mit bereits ermitteltem 'extracted'
+    function navigateToBC(extracted){
+      const url =
+        "https://bcprod01.schwegler.de/BCProd/" +
+        "?page=99000831" +
+        "&company=Schwegler%20Werkzeugfabrik" +
+        "&dc=0" +
+        "&filter=%27No.%27%20IS%20%27" + encodeURIComponent(extracted) + "%27";
+      window.location.href = url;
+    }
+
+    // Dekodier-Ergebnis behandeln – hier NUR den bereits ermittelten Wert verwenden
+    function onDecode(extracted){
+      if (!scanning) return;
+      scanning = false;
+      fallbackActive = false;
+      rescanBtn.style.display = 'inline-block';
+      log(`QR erkannt: ${extracted}`);
+      navigateToBC(extracted);
+    }
+
+    // Aus dem rohen Text den gewünschten Wert extrahieren
+    function extractValue(txt){
+      // Regeln:
+      // - $FA…..$  -> FA… (ohne $)
+      // - FA…..$…  -> Teil vor dem ersten $
+      // - andernfalls: kompletter Text
+      let m = txt.match(/\$(FA[^$]+)\$/);
+      if (m && m[1]) return m[1];
+      m = txt.match(/^(FA[^$]+)/);
+      if (m && m[1]) return m[1];
+      return txt;
+    }
+
+    async function startWithDeviceId(deviceId, attempt=0){
+      if (switching) return;
+      switching = true;
       try{
-        stopTracks();
+        // Alles sauber schließen
+        stopCamera();
+        await sleep(RELEASE_WAIT_MS); // kurze Pause, bis Hardware frei ist
+
+        const constraints = {
+          video: {
+            deviceId: { exact: deviceId },
+            width: { ideal: 1920 }, height: { ideal: 1080 },
+            advanced: [{ focusMode: "continuous" }]
+          },
+          audio: false
+        };
 
         // Sichtbares Video
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -116,27 +185,25 @@
         await videoEl.play().catch(()=>{});
 
         // ZXing kontinuierlich
-        const reader = new ZXing.BrowserQRCodeReader();
         reader.reset();
-        reader.decodeFromConstraints(
-          { video: constraints.video, audio:false },
-          'preview',
-          (result, err) => {
-            if (!scanning) return;
-            if (result){
-              lastHit = Date.now();
-              onDecode(result.text);
-            }
-            // typische Nicht-Treffer-Fehler während des Scans ignorieren
+        reader.decodeFromVideoDevice(deviceId, 'preview', (result, err) => {
+          if (!scanning) return;
+          if (result){
+            lastHit = Date.now();
+            const txt = result.text || '';
+            const extracted = extractValue(txt);
+            onDecode(extracted);
           }
-        );
+          // err während des kontinuierlichen Scans ignorieren
+        });
 
+        currentDeviceId = deviceId;
         scanning = true;
         fallbackActive = false;
         lastHit = Date.now();
-        log(`Scanner läuft (ZXing)… [Kamera: ${facing}]`);
+        log(`Scanner läuft (ZXing) – Device ${deviceId.substring(0,6)}…`);
 
-        // Fallback erst nach längerer Zeit
+        // Fallback erst später
         setTimeout(()=> {
           if (scanning && Date.now() - lastHit > (FALLBACK_DELAY_MS - 500) && !fallbackActive) {
             log('Kein Treffer mit ZXing – Fallback aktiv (jsQR)…');
@@ -146,7 +213,13 @@
 
       }catch(e){
         log(`Start-Fehler: ${e.name} – ${e.message}`);
-        stopTracks();
+        // NotReadableError = Quelle noch belegt → kurzen Retry
+        if (e.name === 'NotReadableError' && attempt < 3){
+          await sleep(RETRY_ON_BUSY_MS);
+          await startWithDeviceId(deviceId, attempt+1);
+        }
+      } finally {
+        switching = false;
       }
     }
 
@@ -163,52 +236,47 @@
             const imageData = ctx.getImageData(0, 0, sw, sh);
             const code = jsQR(imageData.data, sw, sh, { inversionAttempts: "attemptBoth" });
             if (code && code.data){
-              onDecode(code.data);
+              const extracted = extractValue(code.data);
+              onDecode(extracted);
               return;
             }
-          }catch(e){ /* ignorieren und weiterscannen */ }
+          }catch(e){ /* ignorieren */ }
         }
         requestAnimationFrame(tick);
       };
       requestAnimationFrame(tick);
     }
 
-    function onDecode(text){
-      if (!scanning) return;
-      scanning = false;
-      fallbackActive = false;
-      rescanBtn.style.display = 'inline-block';
-      log(`QR erkannt: ${text}`);
-
-      // Beispiel: Parsing + Weiterleitung
-      if (text && text.startsWith('$')){
-        const m = text.match(/\$(FA.*?)\$/);
-        if (m && m[1]){
-          const extracted = m[1];
-          const bcLink = `https://bcprod01.schwegler.de/BCProd/tabet?page=99000831&company=Schwegler%20Werkzeugfabrik&dc=0&filter=%27No.%27%20IS%20%27{extracted}%27`;
-          window.location.href = bcLink;
-        }
-      }
-    }
-
     async function autoStart(){
       const ok = await ensurePermission();
-      if (!ok){ return; }
-      await startZXing();
+      if (!ok) return;
+      await loadDevices();
+      // Front bevorzugen
+      const first = frontId || backId || (devices[0] && devices[0].deviceId);
+      if (!first){ log('Keine Kamera verfügbar.'); return; }
+      await startWithDeviceId(first);
     }
 
     // UI
     switchBtn.addEventListener('click', async ()=>{
-      facing = (facing==='user') ? 'environment' : 'user';
+      if (!devices.length){ await loadDevices(); }
+      const target = (currentDeviceId === frontId && backId) ? backId
+                   : (currentDeviceId === backId  && frontId) ? frontId
+                   : (currentDeviceId !== frontId && frontId) ? frontId
+                   : backId || frontId || (devices[0] && devices[0].deviceId);
       rescanBtn.style.display = 'none';
       scanning = true; fallbackActive = false;
-      await startZXing();
+      await startWithDeviceId(target);
     });
 
     rescanBtn.addEventListener('click', async ()=>{
       rescanBtn.style.display = 'none';
       scanning = true; fallbackActive = false;
-      await startZXing();
+      if (!currentDeviceId){
+        await autoStart();
+      } else {
+        await startWithDeviceId(currentDeviceId);
+      }
     });
 
     window.addEventListener('load', autoStart);
@@ -221,4 +289,3 @@
   </script>
 </body>
 </html>
-
