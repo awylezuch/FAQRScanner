@@ -3,144 +3,24 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>QR‑Code Scanner (ZXing, robust)</title>
+<title>QR-Code Scanner (ZXing, Auto + Fallback)</title>
 <style>
-  :root {
-    --accent: #0078d7;
-  }
-  html, body {
-    margin: 0; padding: 0;
-    height: 100%;
-    font-family: system-ui, "Segoe UI", Roboto, Arial, sans-serif;
-    background: #000;
-    color: #fff;
-  }
-  #scanner-container {
-    position: relative;
-    width: 100vw;
-    height: 100vh;
-    overflow: hidden;
-    background: #000;
-  }
-
-  /* Video sichtbar halten */
-  #preview {
-    position: absolute;
-    inset: 0;
-    width: 100%; height: 100%;
-    object-fit: cover;
-    background: #000;
-    z-index: 0;
-  }
-
-  /* Außen leicht abdunkeln */
-  .darken {
-    position: absolute;
-    inset: 0;
-    background: rgba(0,0,0,0.4);
-    z-index: 1;
-    pointer-events: none;
-  }
-
-  /* Klarer Scan-Rahmen („Loch“ bleibt scharf) */
-  .clear-window {
-    position: absolute;
-    top: 30%; left: 20%;
-    width: 60%; height: 40%;
-    border: 3px solid var(--accent);
-    border-radius: 8px;
-    background: transparent;
-    z-index: 2;
-    pointer-events: none;
-    box-shadow: 0 0 0 9999px rgba(0,0,0,0.25); /* dunkelt außen zusätzlich ab, Loch bleibt klar */
-  }
-
-  /* Scanlinie */
-  .scanline {
-    position: absolute;
-    left: 20%;
-    width: 60%;
-    height: 2px;
-    background: rgba(0,120,215,0.9);
-    border-radius: 1px;
-    animation: scanAnim 2s linear infinite;
-    z-index: 3;
-    pointer-events: none;
-  }
-  @keyframes scanAnim {
-    0%   { top: 30%; }
-    50%  { top: 70%; }
-    100% { top: 30%; }
-  }
-
-  /* Controls + Status */
-  .controls {
-    position: absolute;
-    left: 50%;
-    bottom: 18px;
-    transform: translateX(-50%);
-    display: flex;
-    gap: 10px;
-    z-index: 9999;
-    align-items: center;
-    flex-wrap: wrap;
-    justify-content: center;
-    max-width: 92vw;
-  }
-  button, select {
-    appearance: none;
-    border: none;
-    border-radius: 8px;
-    padding: 12px 16px;
-    font-size: 16px;
-    background: var(--accent);
-    color: #fff;
-    cursor: pointer;
-  }
-  select {
-    background: rgba(0,0,0,0.6);
-    border: 1px solid #777;
-    color: #fff;
-    min-width: 220px;
-  }
-  button.secondary {
-    background: rgba(255,255,255,0.12);
-    border: 1px solid rgba(255,255,255,0.25);
-  }
-  #status {
-    position: absolute;
-    left: 12px; right: 12px;
-    bottom: 80px;
-    z-index: 9999;
-    font-size: 14px;
-    line-height: 1.25;
-    color: #eee;
-    text-shadow: 0 1px 2px rgba(0,0,0,0.8);
-    max-height: 25vh; overflow: auto;
-    padding: 6px 8px;
-    background: rgba(0,0,0,0.35);
-    border-radius: 6px;
-  }
-
-  /* Start-Overlay (falls Autostart geblockt wird) */
-  #tapToStart {
-    position: absolute;
-    inset: 0;
-    background: rgba(0,0,0,0.65);
-    color: #fff;
-    display: none; /* wird nur gezeigt, wenn Autostart fehlschlägt */
-    align-items: center;
-    justify-content: center;
-    flex-direction: column;
-    z-index: 10000;
-    gap: 14px;
-    text-align: center;
-    padding: 24px;
-  }
-  #tapToStart button {
-    font-size: 18px;
-    padding: 14px 20px;
-  }
+  :root { --accent:#0078d7; }
+  html,body{margin:0;padding:0;height:100%;background:#000;color:#fff;font-family:system-ui,"Segoe UI",Roboto,Arial,sans-serif}
+  #scanner-container{position:relative;width:100vw;height:100vh;overflow:hidden;background:#000}
+  #preview{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:#000;z-index:0}
+  .darken{position:absolute;inset:0;background:rgba(0,0,0,.4);z-index:1;pointer-events:none}
+  .clear-window{position:absolute;top:30%;left:20%;width:60%;height:40%;border:3px solid var(--accent);border-radius:8px;background:transparent;z-index:2;pointer-events:none;box-shadow:0 0 0 9999px rgba(0,0,0,.25)}
+  .scanline{position:absolute;left:20%;width:60%;height:2px;background:rgba(0,120,215,.9);border-radius:1px;animation:scanAnim 2s linear infinite;z-index:3;pointer-events:none}
+  @keyframes scanAnim{0%{top:30%}50%{top:70%}100%{top:30%}}
+  .controls{position:absolute;left:50%;bottom:18px;transform:translateX(-50%);display:flex;gap:10px;z-index:9999;align-items:center;flex-wrap:wrap;justify-content:center;max-width:92vw}
+  button,select{appearance:none;border:none;border-radius:8px;padding:12px 16px;font-size:16px;cursor:pointer}
+  button{background:var(--accent);color:#fff}
+  button.secondary{background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.25);color:#fff}
+  select{background:rgba(0,0,0,.6);border:1px solid #777;color:#fff;min-width:220px}
+  #status{position:absolute;left:12px;right:12px;bottom:80px;z-index:9999;font-size:14px;line-height:1.25;color:#eee;text-shadow:0 1px 2px rgba(0,0,0,.8);max-height:25vh;overflow:auto;padding:6px 8px;background:rgba(0,0,0,.35);border-radius:6px}
+  #tapToStart{position:absolute;inset:0;background:rgba(0,0,0,.65);color:#fff;display:none;align-items:center;justify-content:center;flex-direction:column;z-index:10000;gap:14px;text-align:center;padding:24px}
+  #tapToStart button{font-size:18px;padding:14px 20px}
 </style>
 </head>
 <body>
@@ -160,14 +40,12 @@
       <button id="rescan" class="secondary" type="button" style="display:none;">Nochmal scannen</button>
     </div>
 
-    <!-- Fallback-Overlay, falls Autostart blockiert -->
     <div id="tapToStart">
       <div>Zum Starten des Scanners tippen/klicken</div>
       <button id="startNow" type="button">Scanner starten</button>
     </div>
   </div>
 
-  <!-- ZXing Library -->
   <script src="https://unpkg.com/@zxing/library@latest"></script>
   <script>
     const videoEl      = document.getElementById('preview');
@@ -180,159 +58,172 @@
 
     const reader = new ZXing.BrowserQRCodeReader();
     let devices  = [];
-    let currentDeviceId = null;
+    let facing   = 'environment'; // 'environment' | 'user'
+    let scanning = false;
 
-    function log(msg) {
-      console.log(msg);
-      statusEl.textContent = typeof msg === 'string' ? msg : JSON.stringify(msg);
+    function log(msg){ console.log(msg); statusEl.textContent = typeof msg==='string'? msg : JSON.stringify(msg); }
+
+    function stopTracks(){
+      const s = videoEl.srcObject;
+      if (s && s.getTracks){ s.getTracks().forEach(t=>t.stop()); }
+      videoEl.srcObject = null;
     }
 
-    async function ensurePermissionPrompt() {
-      // 1) Erzwinge eine Permission-Abfrage, falls noch keine erteilt wurde.
-      try {
-        log('Berechtigung anfordern…');
-        const tmpStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-        // sofort wieder stoppen – wir wollten nur die Abfrage
-        tmpStream.getTracks().forEach(t => t.stop());
-        log('Berechtigung OK.');
-        return true;
-      } catch (e) {
-        log(`getUserMedia-Fehler: ${e.name} – ${e.message}`);
-        return false;
-      }
-    }
-
-    async function listCameras() {
-      try {
+    async function listCameras(){
+      try{
         devices = await ZXing.BrowserQRCodeReader.listVideoInputDevices();
         cameraSelect.innerHTML = '';
-        devices.forEach((d, i) => {
+        devices.forEach((d,i)=>{
           const opt = document.createElement('option');
-          opt.value = d.deviceId;
+          opt.value = d.deviceId || '';
           opt.textContent = d.label || `Kamera ${i+1}`;
           cameraSelect.appendChild(opt);
         });
         log(devices.length ? `Gefundene Kameras: ${devices.length}` : 'Keine Kamera gefunden.');
-      } catch (e) {
-        log(`Geräteliste-Fehler: ${e.name} – ${e.message}`);
-      }
+      }catch(e){ log(`Geräteliste-Fehler: ${e.name} – ${e.message}`); }
     }
 
-    async function startWithDevice(deviceId) {
-      try {
-        // a) Eigenen Stream sichtbar machen
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { deviceId: { exact: deviceId } },
-          audio: false
-        });
+    async function startWithConstraints(prefFacing){
+      // Versuch 1: exact facing
+      let constraints = { video: { facingMode: { exact: prefFacing } }, audio:false };
+      let ok = await tryStart(constraints);
+      if (ok) return true;
+
+      // Versuch 2: ideal facing
+      constraints = { video: { facingMode: { ideal: prefFacing } }, audio:false };
+      ok = await tryStart(constraints);
+      if (ok) return true;
+
+      // Versuch 3: andere Seite
+      const other = prefFacing === 'environment' ? 'user' : 'environment';
+      constraints = { video: { facingMode: { ideal: other } }, audio:false };
+      ok = await tryStart(constraints);
+      if (ok){ facing = other; return true; }
+
+      // Versuch 4: generisch
+      constraints = { video: true, audio:false };
+      ok = await tryStart(constraints);
+      return ok;
+    }
+
+    async function tryStart(constraints){
+      try{
+        stopTracks();
+        // Sichtbares Video sicherstellen
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
         videoEl.srcObject = stream;
-        await videoEl.play();
+        await videoEl.play().catch(()=>{});
 
-        // b) ZXing starten (nimmt dasselbe <video> per ID)
+        // ZXing über dieselben Constraints starten
         reader.reset();
-        reader.decodeFromVideoDevice(deviceId, 'preview', (result, err) => {
-          if (result) {
-            log(`QR erkannt: ${result.text}`);
-            rescanBtn.style.display = 'inline-block';
+        await reader.decodeFromConstraints(
+          { video: constraints.video, audio:false },
+          'preview',
+          (result, err) => {
+            if (result && scanning){
+              log(`QR erkannt: ${result.text}`);
+              rescanBtn.style.display = 'inline-block';
+              scanning = false;
 
-            // Dein Parsing:
-            const txt = result.text || '';
-            if (txt.startsWith('$')) {
-              const match = txt.match(/\$(FA.*?)\$/);
-              if (match && match[1]) {
-                const extracted = match[1];
-                const bcLink = `https://dein-bc-link.com/?id=${extracted}`;
-                window.location.href = bcLink;
+              const txt = result.text || '';
+              if (txt.startsWith('$')){
+                const m = txt.match(/\$(FA.*?)\$/);
+                if (m && m[1]){
+                  const extracted = m[1];
+                  const bcLink = `https://dein-bc-link.com/?id=${extracted}`;
+                  window.location.href = bcLink;
+                }
               }
             }
-          } else if (err) {
-            // ZXing liefert während des Scans viele „Fehler“ (kein Code im Frame) – nicht laut loggen
           }
-        });
+        );
 
-        currentDeviceId = deviceId;
-        // Auswahl synchronisieren
-        if ([...cameraSelect.options].some(o => o.value === deviceId)) {
-          cameraSelect.value = deviceId;
-        }
+        // Kameraliste (mit Labels) nach erfolgreichem Start laden
+        await listCameras();
+        // Versuche, Auswahl annähernd zu setzen
+        const guess = devices.find(d => new RegExp(facing,'i').test(d.label || ''));
+        if (guess && guess.deviceId){ cameraSelect.value = guess.deviceId; }
+
+        scanning = true;
         log('Scanner läuft.');
         return true;
-      } catch (e) {
+      }catch(e){
         log(`Start-Fehler: ${e.name} – ${e.message}`);
+        stopTracks();
+        reader.reset();
         return false;
       }
     }
 
-    async function autoStart() {
-      // Autostart-Sequenz:
-      // Schritt 1: Permission prompt sicherstellen
-      const ok = await ensurePermissionPrompt();
-      if (!ok) {
-        // Browser blockt Autostart → Overlay mit Start-Knopf zeigen
+    async function autoStart(){
+      // 1) Einmalige Permission erzwingen (zeigt ggf. Prompt)
+      try{
+        log('Berechtigung anfordern…');
+        const tmp = await navigator.mediaDevices.getUserMedia({ video:true, audio:false });
+        tmp.getTracks().forEach(t=>t.stop());
+        log('Berechtigung OK.');
+      }catch(e){
+        log(`getUserMedia-Fehler: ${e.name} – ${e.message}`);
+        // Wenn blockiert → Overlay anzeigen
         tapOverlay.style.display = 'flex';
         return;
       }
 
-      // Schritt 2: Kameras listen (mit Labels)
-      await listCameras();
-      if (!devices.length) {
+      // 2) Start mit bevorzugter Kamera
+      const ok = await startWithConstraints(facing);
+      if (!ok){
+        // Browser verlangt Interaktion → Overlay zeigen
         tapOverlay.style.display = 'flex';
-        return;
-      }
-
-      // Schritt 3: sinnvolle Standardkamera wählen (Back bevorzugen)
-      const back = devices.find(d => /back|rear|environment/i.test(d.label));
-      const fallback = devices[0];
-      const deviceId = (back && back.deviceId) || fallback.deviceId;
-
-      // Schritt 4: starten
-      const started = await startWithDevice(deviceId);
-      if (!started) {
-        tapOverlay.style.display = 'flex';
+      }else{
+        tapOverlay.style.display = 'none';
       }
     }
 
-    // Kamera umschalten (Front/Back Heuristik)
-    switchBtn.addEventListener('click', async () => {
-      if (!devices.length) await listCameras();
-      if (!devices.length) return;
-
-      // Versuch, zwischen Back und Front zu togglen
-      const isBack = /back|rear|environment/i.test(
-        (devices.find(d => d.deviceId === currentDeviceId)?.label || '')
-      );
-      const target = devices.find(d =>
-        isBack ? /front|user/i.test(d.label) : /back|rear|environment/i.test(d.label)
-      ) || devices.find(d => d.deviceId !== currentDeviceId) || devices[0];
-
-      await startWithDevice(target.deviceId);
-    });
-
-    // Auswahl per Dropdown explizit starten
-    cameraSelect.addEventListener('change', async (e) => {
-      const id = e.target.value;
-      if (id) await startWithDevice(id);
-    });
-
-    rescanBtn.addEventListener('click', () => {
-      rescanBtn.style.display = 'none';
-      if (currentDeviceId) startWithDevice(currentDeviceId);
-    });
-
-    // Fallback: manueller Start wenn Autostart blockiert
-    startNowBtn.addEventListener('click', async () => {
+    // UI-Events
+    startNowBtn.addEventListener('click', async ()=>{
       tapOverlay.style.display = 'none';
       await autoStart();
     });
 
-    // Seite geladen → Autostart versuchen
-    window.addEventListener('load', autoStart);
+    switchBtn.addEventListener('click', async ()=>{
+      facing = (facing === 'environment') ? 'user' : 'environment';
+      await startWithConstraints(facing);
+    });
 
-    // Zusätzliche Sicherheitsnetze
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible' && currentDeviceId) {
-        // Sicherstellen, dass das Video spielt
-        if (videoEl.paused) videoEl.play().catch(()=>{});
+    cameraSelect.addEventListener('change', async (e)=>{
+      const id = e.target.value;
+      if (!id) return;
+      // Wenn eine deviceId existiert, starte gezielt
+      stopTracks();
+      reader.reset();
+      try{
+        // Sichtbar machen
+        const stream = await navigator.mediaDevices.getUserMedia({ video:{ deviceId:{ exact:id } }, audio:false });
+        videoEl.srcObject = stream; await videoEl.play().catch(()=>{});
+        // ZXing
+        await reader.decodeFromVideoDevice(id, 'preview', (result, err)=>{
+          if (result && scanning){
+            log(`QR erkannt: ${result.text}`);
+            rescanBtn.style.display = 'inline-block';
+            scanning = false;
+          }
+        });
+        log('Scanner läuft (gewählte Kamera).');
+      }catch(err){
+        log(`Start(gewählt)-Fehler: ${err.name} – ${err.message}`);
+      }
+    });
+
+    rescanBtn.addEventListener('click', async ()=>{
+      rescanBtn.style.display = 'none';
+      scanning = true;
+      await startWithConstraints(facing);
+    });
+
+    window.addEventListener('load', autoStart);
+    document.addEventListener('visibilitychange', ()=>{
+      if (document.visibilityState === 'visible' && videoEl.srcObject && videoEl.paused){
+        videoEl.play().catch(()=>{});
       }
     });
   </script>
