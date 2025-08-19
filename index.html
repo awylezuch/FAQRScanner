@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>QR-Scanner (stabiler Switch, Front default)</title>
+<title>QR-Scanner (stabil, Front default)</title>
 <style>
   :root { --accent:#0078d7; }
   html,body{margin:0;padding:0;height:100%;background:#000;color:#fff;font-family:system-ui,"Segoe UI",Roboto,Arial,sans-serif;overflow:hidden}
@@ -77,12 +77,17 @@
     let scanning = false;
     let fallbackActive = false;
     let lastHit = 0;
-    let switching = false; // Reentrancy Lock
+    let switching = false; // Lock
+    let fallbackTimer = null;
 
-    // ZXing Reader (eine Instanz)
-    const reader = new ZXing.BrowserQRCodeReader();
+    // ZXing Reader (eine Instanz, MultiFormat + TRY_HARDER)
+    const hints = new Map();
+    hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.QR_CODE]);
+    hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+    const reader = new ZXing.BrowserMultiFormatReader(hints);
 
     function log(msg){ console.log(msg); statusEl.textContent = typeof msg==='string'? msg : JSON.stringify(msg); }
+    function sleep(ms){ return new Promise(r=>setTimeout(r, ms)); }
 
     function stopCamera(){
       try { reader.reset(); } catch(e){}
@@ -90,9 +95,9 @@
       if (s && s.getTracks){ s.getTracks().forEach(t=>t.stop()); }
       videoEl.srcObject = null;
       currentDeviceId = null;
+      if (fallbackTimer){ clearTimeout(fallbackTimer); fallbackTimer = null; }
+      fallbackActive = false;
     }
-
-    function sleep(ms){ return new Promise(r=>setTimeout(r, ms)); }
 
     async function ensurePermission(){
       try{
@@ -108,8 +113,7 @@
     }
 
     async function loadDevices(){
-      devices = await ZXing.BrowserQRCodeReader.listVideoInputDevices();
-      // Heuristik: anhand Label Front/Back bestimmen
+      devices = await ZXing.BrowserMultiFormatReader.listVideoInputDevices();
       const find = (rx)=> devices.find(d => rx.test((d.label||'').toLowerCase()))?.deviceId || null;
       frontId = find(/front|user/);
       backId  = find(/back|rear|environment/);
@@ -128,7 +132,16 @@
       return { sx, sy, sw, sh };
     }
 
-    // >> Weiterleitung mit bereits ermitteltem 'extracted'
+    // Wert-Extraktion aus Roh-Text
+    function extractValue(txt){
+      let m = txt.match(/\$(FA[^$]+)\$/);
+      if (m && m[1]) return m[1];
+      m = txt.match(/^(FA[^$]+)/);
+      if (m && m[1]) return m[1];
+      return txt;
+    }
+
+    // Ziel-URL mit bereits ermitteltem 'extracted'
     function navigateToBC(extracted){
       const url =
         "https://bcprod01.schwegler.de/BCProd/" +
@@ -139,62 +152,44 @@
       window.location.href = url;
     }
 
-    // Dekodier-Ergebnis behandeln – hier NUR den bereits ermittelten Wert verwenden
     function onDecode(extracted){
       if (!scanning) return;
       scanning = false;
       fallbackActive = false;
+      if (fallbackTimer){ clearTimeout(fallbackTimer); fallbackTimer = null; }
       rescanBtn.style.display = 'inline-block';
       log(`QR erkannt: ${extracted}`);
       navigateToBC(extracted);
-    }
-
-    // Aus dem rohen Text den gewünschten Wert extrahieren
-    function extractValue(txt){
-      // Regeln:
-      // - $FA…..$  -> FA… (ohne $)
-      // - FA…..$…  -> Teil vor dem ersten $
-      // - andernfalls: kompletter Text
-      let m = txt.match(/\$(FA[^$]+)\$/);
-      if (m && m[1]) return m[1];
-      m = txt.match(/^(FA[^$]+)/);
-      if (m && m[1]) return m[1];
-      return txt;
     }
 
     async function startWithDeviceId(deviceId, attempt=0){
       if (switching) return;
       switching = true;
       try{
-        // Alles sauber schließen
+        // Sauber schließen
         stopCamera();
-        await sleep(RELEASE_WAIT_MS); // kurze Pause, bis Hardware frei ist
+        await sleep(RELEASE_WAIT_MS);
 
+        // 1) Stream selbst starten → Video SICHTBAR
         const constraints = {
-          video: {
-            deviceId: { exact: deviceId },
-            width: { ideal: 1920 }, height: { ideal: 1080 },
-            advanced: [{ focusMode: "continuous" }]
-          },
+          video: { deviceId:{ exact: deviceId }, width:{ideal:1920}, height:{ideal:1080}, advanced:[{focusMode:"continuous"}] },
           audio: false
         };
-
-        // Sichtbares Video
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
         videoEl.srcObject = stream;
         await videoEl.play().catch(()=>{});
 
-        // ZXing kontinuierlich
+        // 2) ZXing vom VIDEO-ELEMENT lesen (kein weiteres getUserMedia!)
         reader.reset();
-        reader.decodeFromVideoDevice(deviceId, 'preview', (result, err) => {
+        reader.decodeFromVideoElementContinuously(videoEl, (result, err) => {
           if (!scanning) return;
-          if (result){
+          if (result && result.getText){
             lastHit = Date.now();
-            const txt = result.text || '';
+            const txt = result.getText();
             const extracted = extractValue(txt);
             onDecode(extracted);
           }
-          // err während des kontinuierlichen Scans ignorieren
+          // typische Nicht-Treffer-Fehler ignorieren
         });
 
         currentDeviceId = deviceId;
@@ -203,8 +198,9 @@
         lastHit = Date.now();
         log(`Scanner läuft (ZXing) – Device ${deviceId.substring(0,6)}…`);
 
-        // Fallback erst später
-        setTimeout(()=> {
+        // 3) Fallback erst später
+        if (fallbackTimer) clearTimeout(fallbackTimer);
+        fallbackTimer = setTimeout(()=> {
           if (scanning && Date.now() - lastHit > (FALLBACK_DELAY_MS - 500) && !fallbackActive) {
             log('Kein Treffer mit ZXing – Fallback aktiv (jsQR)…');
             startFallbackLoop();
@@ -213,7 +209,6 @@
 
       }catch(e){
         log(`Start-Fehler: ${e.name} – ${e.message}`);
-        // NotReadableError = Quelle noch belegt → kurzen Retry
         if (e.name === 'NotReadableError' && attempt < 3){
           await sleep(RETRY_ON_BUSY_MS);
           await startWithDeviceId(deviceId, attempt+1);
@@ -251,7 +246,7 @@
       const ok = await ensurePermission();
       if (!ok) return;
       await loadDevices();
-      // Front bevorzugen
+      // FRONT bevorzugen
       const first = frontId || backId || (devices[0] && devices[0].deviceId);
       if (!first){ log('Keine Kamera verfügbar.'); return; }
       await startWithDeviceId(first);
@@ -280,7 +275,6 @@
     });
 
     window.addEventListener('load', autoStart);
-
     document.addEventListener('visibilitychange', ()=>{
       if (document.visibilityState === 'visible' && videoEl.srcObject && videoEl.paused){
         videoEl.play().catch(()=>{});
