@@ -8,7 +8,7 @@
    margin: 0;
    padding: 0;
    overflow: hidden;
-   font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+   font-family: "Segoe UI", sans-serif;
    background: #000;
  }
  #scanner-container {
@@ -18,7 +18,6 @@
    overflow: hidden;
  }
  
- /* Video im Hintergrund */
  video {
    width: 100%;
    height: 100%;
@@ -28,7 +27,6 @@
    z-index: 0;
  }
 
- /* Abdunkelung außenrum */
  .darken {
    position: absolute;
    top: 0; left: 0;
@@ -37,7 +35,6 @@
    z-index: 1;
  }
 
- /* Klares Scan-Fenster (Loch) */
  .clear-window {
    position: absolute;
    top: 30%; left: 20%;
@@ -48,7 +45,6 @@
    z-index: 2;
  }
 
- /* Scanlinie */
  .scanline {
    position: absolute;
    left: 20%;
@@ -65,7 +61,6 @@
    100% { top: 30%; }
  }
 
- /* Buttons */
  .controls {
    position: absolute;
    bottom: 20px;
@@ -73,7 +68,7 @@
    transform: translateX(-50%);
    display: flex;
    gap: 12px;
-   z-index: 9999; /* Ganz vorne */
+   z-index: 9999;
  }
  button {
    padding: 15px 25px;
@@ -83,20 +78,11 @@
    background: #0078D7;
    color: white;
    cursor: pointer;
-   transition: background 0.2s;
- }
- button:hover {
-   background-color: #005a9e;
- }
- button:disabled {
-   background-color: #c7c7c7;
-   cursor: default;
  }
 </style>
 </head>
 <body>
 <div id="scanner-container">
-  <!-- wichtig: muted, sonst blocken manche Browser -->
   <video id="preview" autoplay playsinline muted></video>
   <div class="darken"></div>
   <div class="clear-window"></div>
@@ -113,6 +99,7 @@
 <script>
  const switchBtn = document.getElementById("switchCamera");
  const rescanBtn = document.getElementById("rescan");
+ const videoElem = document.getElementById("preview");
 
  const codeReader = new ZXing.BrowserQRCodeReader();
  let selectedDeviceId = null;
@@ -128,23 +115,28 @@
        return;
      }
 
-     // Front oder Back wählen
+     // Front- oder Backkamera auswählen
      if (useFrontCam) {
        selectedDeviceId = devices.find(d => d.label.toLowerCase().includes("front"))?.deviceId || devices[0].deviceId;
      } else {
        selectedDeviceId = devices.find(d => d.label.toLowerCase().includes("back"))?.deviceId || devices[0].deviceId;
      }
 
-     // Reset vorheriger Stream
-     codeReader.reset();
+     // Manuell Stream binden (damit Bild sofort sichtbar wird)
+     const stream = await navigator.mediaDevices.getUserMedia({
+       video: { deviceId: { exact: selectedDeviceId } }
+     });
+     videoElem.srcObject = stream;
+     await videoElem.play();
 
-     // Scanner starten → wichtig: "preview" als String!
+     // QR-Code-Scanner starten
+     codeReader.reset();
      codeReader.decodeFromVideoDevice(selectedDeviceId, 'preview', (result, err) => {
        if (result) {
          console.log("QR erkannt:", result.text);
          rescanBtn.style.display = "inline-block";
 
-         // Beispiel-Parsing wie bei dir
+         // Beispiel-Parsing
          if (result.text.startsWith("$")) {
            const match = result.text.match(/\$(FA.*?)\$/);
            if (match && match[1]) {
@@ -156,22 +148,26 @@
        }
      });
    } catch (e) {
-     console.error("Fehler beim Start:", e);
+     console.error("Kamera-Fehler:", e.name, e.message);
    }
  }
 
- // Buttons
+ // Kamera wechseln
  switchBtn.addEventListener("click", () => {
    useFront = !useFront;
    startCamera(useFront);
  });
+
+ // Nochmal scannen
  rescanBtn.addEventListener("click", () => {
    rescanBtn.style.display = "none";
    startCamera(useFront);
  });
 
- // Start beim Laden
- startCamera(true);
+ // Scanner automatisch beim Laden starten
+ window.addEventListener("load", () => {
+   startCamera(true);
+ });
 </script>
 </body>
 </html>
