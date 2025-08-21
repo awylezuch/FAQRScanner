@@ -3,10 +3,14 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>QR-Scanner (Front, jsQR + ZXing Snapshot)</title>
+<title>QR-Scanner (Gegenlicht-optimiert)</title>
 <style>
   :root { --accent:#0078d7; }
-  html,body{margin:0;padding:0;height:100%;background:#000;color:#fff;font-family:system-ui,"Segoe UI",Roboto,Arial,sans-serif;overflow:hidden}
+  html,body{
+    margin:0;padding:0;height:100%;
+    background:#000;color:#fff;font-family:system-ui,"Segoe UI",Roboto,Arial,sans-serif;
+    overflow:hidden;
+  }
   #wrap{position:relative;width:100vw;height:100vh;background:#000}
   video{
     position:fixed; inset:0;
@@ -15,36 +19,72 @@
     background:#111;
     transform:none !important; -webkit-transform:none !important;
     will-change:transform; backface-visibility:hidden; -webkit-backface-visibility:hidden;
+    z-index:0;
   }
-  /* schlankes Overlay */
-  .window{position:absolute;top:30%;left:20%;width:60%;height:40%;border:3px solid var(--accent);border-radius:8px;z-index:2;pointer-events:none}
-  .scanline{position:absolute;left:20%;width:60%;height:2px;background:rgba(0,120,215,.95);border-radius:1px;animation:scanAnim 2s linear infinite;z-index:3;pointer-events:none}
-  @keyframes scanAnim{0%{top:30%}50%{top:70%}100%{top:30%}}
+
+  /* Schwarze Masken um das Scanfenster (stabil, keine Filter/Masks) */
+  .mask{ position:absolute; background:#000; pointer-events:none; z-index:1; }
+  /* Fenster: top:30%, left:20%, width:60%, height:40% */
+  .mask.top    { top:0;    left:0;   width:100%; height:30%; }
+  .mask.bottom { bottom:0; left:0;   width:100%; height:30%; }
+  .mask.left   { top:30%;  left:0;   width:20%;  height:40%; }
+  .mask.right  { top:30%;  right:0;  width:20%;  height:40%; }
+
+  /* Fenster-Rahmen + Scanlinie */
+  .window{
+    position:absolute; top:30%; left:20%; width:60%; height:40%;
+    border:3px solid var(--accent); border-radius:8px;
+    z-index:2; pointer-events:none;
+  }
+  .scanline{
+    position:absolute; left:20%; width:60%; height:2px;
+    background:rgba(0,120,215,.95); border-radius:1px;
+    animation:scanAnim 2s linear infinite; z-index:3; pointer-events:none;
+  }
+  @keyframes scanAnim { 0%{top:30%} 50%{top:70%} 100%{top:30%} }
+
+  /* Controls OBEN fixiert */
   .controls{
     position:fixed; top:calc(env(safe-area-inset-top, 0px) + 10px);
     left:50%; transform:translateX(-50%);
-    display:flex; gap:10px; z-index:10000;
-    align-items:center; flex-wrap:wrap; justify-content:center; max-width:92vw;
+    display:flex; gap:8px; z-index:10000;
+    align-items:center; flex-wrap:wrap; justify-content:center; max-width:96vw;
   }
-  button{appearance:none;border:none;border-radius:8px;padding:10px 14px;font-size:15px;cursor:pointer;background:var(--accent);color:#fff}
-  button.secondary{background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.25)}
-  #status{position:fixed;left:12px;right:12px;top:calc(env(safe-area-inset-top, 0px) + 56px);
-    z-index:10000;font-size:13px;line-height:1.25;color:#eee;text-shadow:0 1px 2px rgba(0,0,0,.8);
-    max-height:25vh;overflow:auto;padding:6px 8px;background:rgba(0,0,0,.35);border-radius:6px}
+  button{
+    appearance:none;border:none;border-radius:8px;
+    padding:10px 12px;font-size:14px;cursor:pointer;
+    background:var(--accent);color:#fff; white-space:nowrap;
+  }
+  button.secondary{ background:rgba(255,255,255,.12); border:1px solid rgba(255,255,255,.25) }
+  #status{
+    position:fixed; left:12px; right:12px; top:calc(env(safe-area-inset-top, 0px) + 56px);
+    z-index:10000; font-size:13px; line-height:1.25; color:#eee;
+    text-shadow:0 1px 2px rgba(0,0,0,.8);
+    max-height:25vh; overflow:auto; padding:6px 8px; background:rgba(0,0,0,.35); border-radius:6px;
+  }
 </style>
 </head>
 <body>
   <div id="wrap">
     <video id="vid" autoplay playsinline muted webkit-playsinline></video>
 
+    <!-- Schwarze Ränder -->
+    <div class="mask top"></div>
+    <div class="mask bottom"></div>
+    <div class="mask left"></div>
+    <div class="mask right"></div>
+
+    <!-- Scanfenster -->
     <div class="window" aria-hidden="true"></div>
     <div class="scanline" aria-hidden="true"></div>
 
     <div id="status">Initialisiere…</div>
 
     <div class="controls">
-      <button id="switch" class="secondary" type="button">Kamera wechseln</button>
-      <button id="rescan" class="secondary" type="button" style="display:none;">Nochmal scannen</button>
+      <button id="switch"   class="secondary" type="button">Kamera wechseln</button>
+      <button id="torch"    class="secondary" type="button" style="display:none;">Licht an</button>
+      <button id="backlit"  class="secondary" type="button">Gegenlicht: aus</button>
+      <button id="rescan"   class="secondary" type="button" style="display:none;">Nochmal scannen</button>
     </div>
   </div>
 
@@ -53,25 +93,29 @@
   <script src="https://unpkg.com/@zxing/library@latest"></script>
 
   <script>
-    const vid     = document.getElementById('vid');
-    const statusEl= document.getElementById('status');
-    const btnSwap = document.getElementById('switch');
-    const btnRes  = document.getElementById('rescan');
+    const vid      = document.getElementById('vid');
+    const statusEl = document.getElementById('status');
+    const btnSwap  = document.getElementById('switch');
+    const btnTorch = document.getElementById('torch');
+    const btnBackL = document.getElementById('backlit');
+    const btnRes   = document.getElementById('rescan');
 
     // ===== Einstellungen =====
-    const FRONT_DEFAULT       = true;  // Front ist Standard
-    const ZXING_ENABLE_AFTER  = 8000;  // ZXing erst nach 8s zuschalten
-    const ZXING_PERIOD_MS     = 600;   // ZXing-Snapshot höchstens alle 600ms
-    const ROI_W               = 0.60;  // Sicht-Fenster (nur visuell)
-    const ROI_H               = 0.40;
+    const FRONT_DEFAULT      = true;   // Front ist Standard
+    const ZXING_ENABLE_AFTER = 8000;   // ZXing erst nach 8s zuschalten
+    const ZXING_PERIOD_MS    = 600;    // ZXing-Snapshot höchstens alle 600ms
+    const ROI_W              = 0.60;   // Sicht-Fenster (nur optisch)
+    const ROI_H              = 0.40;
 
-    let useFront  = FRONT_DEFAULT;
-    let stream    = null;
-    let scanning  = false;
-    let enableZX  = false;
-    let lastZX    = 0;
+    let useFront   = FRONT_DEFAULT;
+    let stream     = null;
+    let scanning   = false;
+    let enableZX   = false;
+    let lastZX     = 0;
+    let preproc    = 'normal';    // 'normal' | 'backlit'
+    let torchOn    = false;
 
-    // Canvas für ROI + Vollbild
+    // Canvas (ROI + Vollbild)
     const roiCanvas  = document.createElement('canvas');
     const roiCtx     = roiCanvas.getContext('2d', { willReadFrequently: true });
     const fullCanvas = document.createElement('canvas');
@@ -79,7 +123,7 @@
     roiCtx.imageSmoothingEnabled  = false;
     fullCtx.imageSmoothingEnabled = false;
 
-    // ZXing: breite Format-Auswahl (falls im Build vorhanden)
+    // ZXing: breite Formatauswahl, inkl. (falls vorhanden) Micro/rMQR
     const hints   = new Map();
     const formats = [
       ZXing.BarcodeFormat.QR_CODE,
@@ -110,6 +154,8 @@
       if (stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
       vid.srcObject = null;
       scanning = false; enableZX = false;
+      torchOn = false;
+      btnTorch.textContent = 'Licht an';
     }
 
     function roiRect(){
@@ -122,6 +168,32 @@
       return { sx, sy, sw, sh, vw, vh };
     }
 
+    // --- Preprocessing (hilft bei hellem Hintergrund): Gamma↓ + Kontrast↑ ---
+    function preprocess(imgData){
+      if (preproc === 'normal') return imgData;
+      const data = imgData.data;
+      const invGamma = 1/0.7;   // Gamma 0.7 → dunkler
+      const contrast = 1.3;     // Kontrast etwas erhöhen
+      for (let i=0; i<data.length; i+=4){
+        let r = data[i], g = data[i+1], b = data[i+2];
+
+        // Gamma
+        r = 255 * Math.pow(r/255, invGamma);
+        g = 255 * Math.pow(g/255, invGamma);
+        b = 255 * Math.pow(b/255, invGamma);
+
+        // Graustufe
+        let y = 0.2126*r + 0.7152*g + 0.0722*b;
+
+        // Kontrast
+        y = (y - 128) * contrast + 128;
+        if (y < 0) y = 0; else if (y > 255) y = 255;
+
+        data[i] = data[i+1] = data[i+2] = y;
+      }
+      return imgData;
+    }
+
     // Wert aus Rohtext -> 'extracted'
     function extractValue(txt){
       let m = txt.match(/\$(FA[^$]+)\$/); if (m && m[1]) return m[1];
@@ -130,7 +202,7 @@
     }
 
     function navigateToBC(extracted){
-      const url = "https://bcprod01.schwegler.de/BCProd/tablet"
+      const url = "https://bcprod01.schwegler.de/BCProd/"
         + "?page=99000831"
         + "&company=Schwegler%20Werkzeugfabrik"
         + "&dc=0"
@@ -146,51 +218,59 @@
       navigateToBC(extracted);
     }
 
+    // ZXing-Snapshot vom Vollbild (ohne zweiten Kamerazugriff)
+    async function tryZXingFull(vw, vh){
+      try{
+        if (fullCanvas.width !== vw){ fullCanvas.width = vw; fullCanvas.height = vh; }
+        fullCtx.drawImage(vid, 0, 0, vw, vh);
+        // Für ZXing geben wir das Original (ohne Preprocessing); optional: mit Preprocessing
+        const url = fullCanvas.toDataURL('image/png');
+        const res = await zxing.decodeFromImageUrl(url);
+        if (res && res.getText) { onDecode(extractValue(res.getText())); return true; }
+      }catch(e){ /* NotFound → ignorieren */ }
+      return false;
+    }
+
     // Haupt-Scanloop:
-    //  - jsQR auf ROI JEDEN Frame
+    //  - jsQR auf ROI JEDEN Frame (mit optionalem Preprocessing)
     //  - jsQR auf VOLLBILD alle ~3 Frames
-    //  - ZXing (VOLLBILD-Snapshot) erst nach 8s, dann gedrosselt
+    //  - ZXing (VOLLBILD-Snapshot) erst nach Delay, dann gedrosselt
     let frameCount = 0;
     async function scanLoop(){
       if (!scanning) return;
       const { sx, sy, sw, sh, vw, vh } = roiRect();
 
-      // ROI → Canvas (ohne Resampling)
+      // ROI → Canvas
       roiCanvas.width = sw; roiCanvas.height = sh;
       try { roiCtx.drawImage(vid, sx, sy, sw, sh, 0, 0, sw, sh); } catch(_) {}
 
-      // jsQR – ROI (schnell)
+      // jsQR – ROI (mit Preprocessing bei Gegenlicht)
       try{
-        const img = roiCtx.getImageData(0, 0, sw, sh);
+        let img = roiCtx.getImageData(0, 0, sw, sh);
+        img = preprocess(img);
         const qr  = jsQR(img.data, sw, sh, { inversionAttempts: "attemptBoth" });
         if (qr && qr.data) { onDecode(extractValue(qr.data)); return; }
       }catch(_){}
 
-      // jsQR – VOLLBILD alle 3 Frames (hilft bei großen/komplexen Codes)
+      // jsQR – Vollbild alle 3 Frames (nur wenn nötig)
       frameCount = (frameCount + 1) % 3;
       if (frameCount === 0) {
         fullCanvas.width = vw; fullCanvas.height = vh;
         try {
           fullCtx.drawImage(vid, 0, 0, vw, vh);
-          const imgF = fullCtx.getImageData(0, 0, vw, vh);
+          let imgF = fullCtx.getImageData(0, 0, vw, vh);
+          imgF = preprocess(imgF);
           const qrF  = jsQR(imgF.data, vw, vh, { inversionAttempts: "attemptBoth" });
           if (qrF && qrF.data) { onDecode(extractValue(qrF.data)); return; }
         } catch(_){}
       }
 
-      // ZXing – VOLLBILD-Snapshot (kein zweiter Kamerazugriff!)
+      // ZXing – Vollbild (gedrosselt, erst nach Delay aktiv)
       const now = Date.now();
       if (enableZX && now > lastZX + ZXING_PERIOD_MS) {
         lastZX = now;
-        try {
-          if (fullCanvas.width !== vw) { fullCanvas.width = vw; fullCanvas.height = vh; fullCtx.imageSmoothingEnabled=false; }
-          fullCtx.drawImage(vid, 0, 0, vw, vh);
-          const url = fullCanvas.toDataURL('image/png');
-          const res = await zxing.decodeFromImageUrl(url);
-          if (res && res.getText) { onDecode(extractValue(res.getText())); return; }
-        } catch(err) {
-          // NotFoundException = kein Code im Bild → leise ignorieren
-        }
+        const ok = await tryZXingFull(vw, vh);
+        if (ok) return;
       }
 
       requestAnimationFrame(scanLoop);
@@ -199,24 +279,22 @@
     async function startCamera(){
       stopStream();
       try{
-        // Erst „ideal“ hohe Auflösung probieren, sonst minimal fallback
+        // Erst „ideal“, dann minimal (wie beim funktionierenden Test)
         const cIdeal = { video: { facingMode: { ideal: useFront ? 'user' : 'environment' }, width:{ideal:1280}, height:{ideal:720} }, audio:false };
         const cMin   = { video: { facingMode: { ideal: useFront ? 'user' : 'environment' } }, audio:false };
-        try {
-          stream = await navigator.mediaDevices.getUserMedia(cIdeal);
-        } catch {
-          stream = await navigator.mediaDevices.getUserMedia(cMin);
-        }
-        vid.srcObject = stream;
+        try { stream = await navigator.mediaDevices.getUserMedia(cIdeal); }
+        catch { stream = await navigator.mediaDevices.getUserMedia(cMin); }
 
-        // Auf Metadaten warten → dann play() (verhindert Schwarzbild)
+        vid.srcObject = stream;
         await new Promise(res => { if (vid.readyState >= 2) res(); else vid.onloadedmetadata = res; });
         await vid.play().catch(()=>{});
 
         btnRes.style.display = 'none';
-        scanning = true;
-        enableZX = false;
+        scanning = true; enableZX = false; preproc = (preproc === 'normal') ? 'normal' : 'backlit'; // behalten
         log(`Kamera aktiv – ${useFront ? 'Front' : 'Back'} (${vid.videoWidth}×${vid.videoHeight})`);
+
+        // Torch-Button nur zeigen, wenn Rückkamera + unterstützt
+        updateTorchVisibility();
 
         // ZXing später zuschalten
         setTimeout(()=> { enableZX = true; }, ZXING_ENABLE_AFTER);
@@ -227,11 +305,46 @@
       }
     }
 
+    function updateTorchVisibility(){
+      try{
+        const track = stream && stream.getVideoTracks ? stream.getVideoTracks()[0] : null;
+        const caps  = track && track.getCapabilities ? track.getCapabilities() : {};
+        const tor   = !!(caps && caps.torch);
+        btnTorch.style.display = (!useFront && tor) ? 'inline-block' : 'none';
+      } catch(_) {
+        btnTorch.style.display = 'none';
+      }
+    }
+
+    // Torch toggeln (falls unterstützt, nur Back-Cam)
+    async function toggleTorch(){
+      const track = stream && stream.getVideoTracks ? stream.getVideoTracks()[0] : null;
+      if (!track || !track.getCapabilities || !track.applyConstraints) return;
+      const caps = track.getCapabilities();
+      if (!caps.torch) return;
+      torchOn = !torchOn;
+      try{
+        await track.applyConstraints({ advanced: [{ torch: torchOn }] });
+        btnTorch.textContent = torchOn ? 'Licht aus' : 'Licht an';
+      }catch(e){
+        log(`Torch-Fehler: ${e.name} – ${e.message}`);
+      }
+    }
+
+    // Gegenlicht-Boost (nur Bild-Preprocessing; sicher & stabil)
+    function toggleBacklight(){
+      preproc = (preproc === 'normal') ? 'backlit' : 'normal';
+      btnBackL.textContent = (preproc === 'backlit') ? 'Gegenlicht: an' : 'Gegenlicht: aus';
+      log((preproc === 'backlit') ? 'Gegenlicht-Optimierung aktiv.' : 'Gegenlicht-Optimierung aus.');
+    }
+
     // UI
     btnSwap.addEventListener('click', async ()=>{
       useFront = !useFront;
       await startCamera();
     });
+    btnTorch.addEventListener('click', toggleTorch);
+    btnBackL.addEventListener('click', toggleBacklight);
     btnRes.addEventListener('click', async ()=>{
       btnRes.style.display = 'none';
       scanning = true;
@@ -245,7 +358,6 @@
       await startCamera();
     });
 
-    // Sicherstellen, dass das Video nach Rückkehr weiterläuft
     document.addEventListener('visibilitychange', ()=>{
       if (document.visibilityState === 'visible' && vid.srcObject && vid.paused){
         vid.play().catch(()=>{});
@@ -254,4 +366,3 @@
   </script>
 </body>
 </html>
-
